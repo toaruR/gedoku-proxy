@@ -4,6 +4,7 @@ members = [
     "src/gedoku-core",
     "src/gedoku-server",
     "src/gedoku-mock-upstream",
+    "src/gedoku-jsonwalk",
 ]
 
 [workspace.package]

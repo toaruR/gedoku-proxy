@@ -46,4 +46,5 @@ planモードで作成したマークダウンファイルは、<プロジェク
 
 - **Windows環境で `cargo test --workspace` が `ページング ファイルが小さすぎる` (os error 1455) で失敗する**: rlib の mmap がページファイル不足で落ちる。既定の並列ジョブ数(コア数)だと再現する。`cargo test --workspace -j 1` で回避可能。`cargo build` 単体は通ることがあるが `test` は複数バイナリを並行コンパイルするため踏みやすい。
 - **HTTPヘッダー名にUnicode文字は使えない**: `HeaderValue`/`HeaderName` はASCIIのみ許容。オープンリスト転送のテストで日本語ヘッダー名(`x-未定義-...`)を使うと `InvalidHeaderName` で落ちる。テストヘッダー名はASCIIにする。
+- **`serde_json` の `arbitrary_precision` でも指数表記の符号は正規化される**: `1e10` を入力すると再直列化時に `1e+10` になる(`+`が挿入される)。桁・小数点位置(`1.50`→`1.5`にしない等)は保持されるが、指数部の符号だけは例外。バイト完全一致テストの数値フィクスチャは `1e+10` のように符号付きで書く。
 <!-- knowledge-kit:end section=gotchas -->
