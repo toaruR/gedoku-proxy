@@ -1,0 +1,62 @@
+# gedoku-proxy（毒抜きLLMプロキシ）
+
+[English](README.md)
+
+`ANTHROPIC_BASE_URL` 経由で Claude Code などのクライアントと Anthropic Messages API 互換アップストリームの間に立つ透過プロキシ。Rust / axum 製。
+
+> 詳細設計は [docs/gedoku-proxy-design.md](docs/gedoku-proxy-design.md)、仕様は [docs/specification.md](docs/specification.md) を参照。
+
+## ステータス
+
+現在 **P0（透過プロキシ骨格・無検閲）完了**。リクエスト/レスポンスをストリーミングでそのまま素通しする段階。JSON構造保存・検出・置換（毒抜き本体）は未実装。
+
+## 構成
+
+```
+src/
+  gedoku-core/           設定(Config)・エラー型
+  gedoku-server/         axumハンドラ / binクレート gedoku-proxy
+  gedoku-mock-upstream/  テスト用の偽Anthropicサーバ
+```
+
+## ビルド・実行
+
+```bash
+cargo build --workspace
+cargo run -p gedoku-server --bin gedoku-proxy
+```
+
+デフォルトで `127.0.0.1:18787` で待ち受け、`https://api.anthropic.com` へ転送する。
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:18787
+export ANTHROPIC_AUTH_TOKEN=sk-...   # 既存の資格情報をそのまま使用
+```
+
+## 環境変数
+
+| 変数 | 既定値 | 説明 |
+|---|---|---|
+| `GEDOKU_LISTEN_ADDR` | `127.0.0.1:18787` | 待ち受けアドレス |
+| `GEDOKU_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | 転送先ベースURL |
+| `GEDOKU_UPSTREAM_AUTH_MODE` | `passthrough` | 資格情報転送モード: `passthrough` / `replace` / `augment` |
+| `GEDOKU_UPSTREAM_AUTH_TOKEN` | なし | `replace`/`augment` 時に使うトークン |
+| `GEDOKU_UPSTREAM_API_KEY` | なし | 同上（`x-api-key`用） |
+| `GEDOKU_EXTRA_UPSTREAM_HEADERS` | なし | 追加ヘッダー。`Name: Value, Name2: Value2` 形式 |
+| `GEDOKU_UPSTREAM_ACCEPT_ENCODING` | `identity` | アップストリームへの `Accept-Encoding` |
+| `GEDOKU_MAX_REQUEST_BYTES` | `33554432`（32MiB） | リクエストボディ上限 |
+| `GEDOKU_MODELS_PASSTHROUGH` | `false` | `/v1/models` をアップストリームへ到達させるか |
+| `GEDOKU_UPSTREAM_CONNECT_TIMEOUT_SECS` | `30` | アップストリーム接続タイムアウト |
+
+## テスト
+
+```bash
+cargo test --workspace -j 1
+cargo clippy --workspace --all-targets -j 1
+```
+
+> Windows環境では `cargo test --workspace` を並列実行するとページングファイル不足（os error 1455）で失敗することがある。`-j 1` で回避する。
+
+## ライセンス
+
+MIT

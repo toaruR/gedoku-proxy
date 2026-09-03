@@ -1,0 +1,113 @@
+You will work in a loop until the task meets the bar.
+
+REFERENCE (normative — the plan MUST be consistent with these, cite them where relevant):
+- gedoku-proxy 設計書 (PRIMARY NORMATIVE SOURCE。実装プランはこの設計書の忠実な実行計画であり、
+  設計の再検討や作り直しではない):
+  ./gedoku-proxy-design.md   ← 添付／同ディレクトリに存在する。必ず全文を読んでから着手すること
+- Gateway protocol reference (Claude Codeがゲートウェイに送るリクエストの契約):
+  https://code.claude.com/docs/en/llm-gateway-protocol
+- Connect Claude Code to an LLM gateway (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN /
+  ANTHROPIC_API_KEY / ANTHROPIC_CUSTOM_HEADERS の設定方法):
+  https://code.claude.com/docs/en/llm-gateway-connect
+- Messages API (対象APIのリクエスト/レスポンスJSONスキーマ):
+  https://platform.claude.com/docs/en/api/messages
+
+優先順位: 一次仕様 (Gateway protocol / Messages API) > 設計書 > 本プラン。
+設計書が一次仕様と矛盾する箇所を見つけた場合は、プランの中で「DESIGN DEFECT」として明示し、
+一次仕様に合わせた修正内容と、設計書のどの節を書き換えるべきかを記述すること。黙って従わない。
+
+TASK:
+`gedoku-proxy-design.md` に従って「毒抜きLLMプロキシ (gedoku-proxy) の実装プラン」を作る。
+実装（プロダクションコード）は書かない。
+成果物は、開発チーム（または自律コーディングエージェント）がこのプランだけを読んで
+初日から着手でき、完了判定まで自走できるレベルの実装計画ドキュメント（Markdown, IMPLEMENTATION_PLAN.md）である。
+
+プランは「設計書の各節を、検証可能な単位の作業へ分解し、順序と完了条件を与えたもの」でなければ
+ならない。設計判断のやり直し（ADR の再議論、代替アーキテクチャの提案）は本タスクの範囲外であり、
+設計書が Open Question としているものだけを「決めるべき意思決定」として計画に載せる。
+
+対象は設計書 §21 の Phase 構成 (P0: 透過プロキシの骨格 → P1: 構造保存 → P2: 検出と置換 →
+P3: ストリーム復元 → P4: 監査ログ → P5: 設定とデプロイ → P6: 拡張) を基本骨格とし、
+「毒抜きを一切しないプロキシが Claude Code から見て直結と完全に同じ挙動になる」ことを
+最初のマイルストーンに置くこと。エンドポイント忠実性と毒抜き機能を同時にデバッグする計画は
+不合格とする。
+
+SUCCESS CRITERIA (be strict, evaluate the IMPLEMENTATION PLAN, not code, not the design):
+- トレーサビリティ — 設計書の全節 (§3〜§18) と、プラン中の作業項目が双方向にマッピングされた
+  トレーサビリティ表がある。「設計書のどの節が、どの作業項目で実装され、どのテストで検証されるか」
+  「未着手・意図的に見送りの節はどれで、その理由は何か」が一覧で追える。設計書の MUST 要件
+  (S1-S8, M1-M8, E1-E7, ST1-ST7, C1-C7, I1-I2) が漏れなく作業項目へ紐づいている。
+- 技術スタック選定 — 実装言語・HTTPサーバ/クライアント・正規表現エンジン・JSONライブラリ・
+  SSEパーサの選定が、設計書の非機能要件 (§17: p95 6ms、200同時ストリーム、フレーム毎0.5ms、
+  ロックを取らない) と機能要件 (順序保存JSON DOM、正規表現のprefix-DFA判定、mlock/MADV_DONTDUMP)
+  から逆算して根拠づけられている。候補比較表があり、却下理由が書かれている。
+  特に「順序保存かつ未知フィールド保持のJSON DOM」と「正規表現の部分一致(prefix)判定」を
+  満たすライブラリが実在することを確認済みであること (RE2系はprefix判定不可、といった制約に言及)。
+- 作業分解 (WBS) — 各 Phase が、1〜3日で完了する粒度の作業項目 (task) に分解され、各 task に
+  ID・依存関係・成果物・完了条件 (DoD)・見積り (人日) が付いている。依存関係グラフ (Mermaid可) が
+  あり、クリティカルパスと並行実行可能な枝が識別されている。
+- Phase ゲート — 各 Phase の終了判定が「テストが通ること」ではなく「観測可能な事実」で定義されて
+  いる (例: P0 完了 = 実際の Claude Code セッションをプロキシ経由で完走し、直結時とツール実行結果が
+  一致する)。ゲートを通らない場合に次 Phase へ進まないことが明記されている。
+- テスト計画 — 設計書 §19 の受け入れテスト T-1〜T-16 が、それぞれ「どの Phase で」「どのテスト
+  レイヤ (unit / property / golden / integration / soak) で」「どう自動化するか」まで具体化されて
+  いる。特に (a) 全分割位置を網羅するチャンク境界テスト、(b) 290秒無音ストリームの ping 保全テスト、
+  (c) ログ非漏洩の全出力 grep、(d) ディスク非書込の syscall 監査 の 4 つは、テストハーネスの
+  作り方 (モック上流サーバ、eBPF/strace、決定論的な時間制御) まで記述されている。
+- 検証環境 — 上流をモックする「フェイク Anthropic サーバ」の要件 (SSE生成、ping間隔制御、
+  遅延注入、エラー本文注入、chunk分割位置の制御、event-stream バイナリ生成) が定義され、
+  実 API を叩かずに CI で全テストが回ることが示されている。実 API を使う契約テストの
+  位置づけと頻度も分けて書かれている。
+- 非機能の測定計画 — §17 の数値目標 (p50/p95/p99、200同時ストリーム、メモリ 40KiB/stream) を
+  どう測るかのベンチマークハーネス設計、測定条件 (本文サイズ、検出件数、CPU)、
+  リグレッション検知の閾値と CI 組み込み方法が定量的に書かれている。
+- Open Questions の意思決定計画 — 設計書 §20 の OQ-1〜OQ-10 それぞれについて、
+  「誰が/いつ/どんなデータを見て決めるか」「決まるまでの暫定実装」「決定が覆ったときの
+  手戻り範囲」が計画に組み込まれている。OQ を放置したまま GA する計画は不合格。
+- リスク登録簿 — 実装上の技術リスク (例: prefix判定可能な正規表現エンジンが選定言語に無い、
+  event-stream の CRC 再計算コスト、session affinity が LB で張れない、NER モデルの
+  レイテンシ超過) が、発生確率×影響度、早期検知シグナル、代替案 (contingency)、
+  意思決定期限とセットで列挙されている。「設計が実装不能と判明した場合」の
+  エスカレーション経路がある。
+- セキュリティ実装ゲート — 設計書 §10/§12 の MUST (平文をディスクに書かない、ログに値を出さない、
+  mlock/core dump 抑止、ログ出口ガード) が、コードレビュー観点・CI の静的検査 (禁止 API の
+  lint ルール、Debug 実装の禁止) ・リリース前チェックリストとして具体化されている。
+  「規約で守る」ではなく「機械的に検知する」手段が示されている。
+- リリース計画 — マイルストーン (Alpha/Beta/GA) の定義、各段階の受け入れ基準、
+  observe モードでの段階導入手順、ロールバック手順、バージョニング方針、
+  Claude Code の新リリースへの追随プロセス (設計書 T-14 の運用化) が書かれている。
+- 体制と並行化 — 想定チームサイズ別 (1人 / 3人 / エージェント並列) の実行順序が示され、
+  総工数見積りと期間見積りが分けて書かれている。1人の場合のクリティカルパスが明示されている。
+- リポジトリ構造 — ディレクトリ/モジュール構成案があり、設計書のアダプタ層 (§11)・
+  検出エンジン (§7)・マッピングストア (§10) が独立して差し替え・テスト可能な境界として
+  切られている。各モジュールの公開インタフェース (型シグネチャ level) が示されている。
+- 設計との差分 — プラン作成の過程で発見した、設計書の曖昧さ・矛盾・実装不能箇所が
+  「DESIGN DEFECT」「DESIGN GAP」として列挙され、それぞれ設計書のどの節をどう修正すべきかの
+  提案が付いている。「設計書に書いていないので決めた」事項も明示されている。
+
+LOOP PROTOCOL, repeat every turn:
+1. PLAN   - state the single next step.
+2. DO     - produce or improve the implementation plan document.
+3. VERIFY - score the result 1-10 on each criterion.
+            Be brutally honest. List exactly what is still weak.
+4. DECIDE - if every criterion is 8+, print FINAL and stop.
+            Otherwise print ITERATING and go again, fixing
+            the weakest point first.
+
+RULES:
+- This is a PLANNING task. Do not write production code. Pseudo-code, type signatures,
+  interface sketches, directory trees, diagrams (Mermaid可), tables, and prose are fine and expected.
+- 設計書を再設計しない。設計書の判断 (ADR-1〜ADR-14) を覆す提案は、それが一次仕様に違反して
+  いる場合を除き、書かない。疑問は「DESIGN GAP」として記録し、計画は設計書どおりに進める。
+- Treat the REFERENCE section as normative in the stated priority order. If the design document
+  conflicts with the primary spec, the spec wins: flag it as DESIGN DEFECT and plan the correction.
+- 見積りは必ず数値で書く (人日)。「大」「中」「小」は不合格。
+- 完了条件 (DoD) は必ず観測可能な事実で書く。「実装する」「対応する」は不合格。
+- Never call it done until every criterion is 8 or higher.
+- Each pass must fix the weakest score from the last VERIFY.
+- Do not ask me questions. Make a sensible assumption and keep going.
+  (既定の前提: 実装言語は Rust、チームは 1〜3 人、GA まで 3 ヶ月、CI は GitHub Actions、
+   デプロイ先は Kubernetes と単一バイナリの両方。これらは設計書 §17/§18 と整合する限り
+   プラン側で変更してよいが、変更したら理由を明記すること。)
+
+Begin.

@@ -1,0 +1,29 @@
+[package]
+name = "gedoku-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "gedoku-proxy"
+path = "src/main.rs"
+
+[dependencies]
+gedoku-core = { path = "../gedoku-core" }
+tokio.workspace = true
+axum.workspace = true
+reqwest.workspace = true
+http.workspace = true
+http-body-util.workspace = true
+bytes.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+gedoku-mock-upstream = { path = "../gedoku-mock-upstream" }
+sha2.workspace = true
+hex.workspace = true
+tokio-test = "0.4"

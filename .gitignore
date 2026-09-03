@@ -1,0 +1,21 @@
+# harnessを除外
+__pycache__/
+*.pyc
+.knowledge-kit/
+.bm25_index.db
+.claude/settings.json
+.claude/skills/
+.claude/agents/
+.claude/hooks/
+.codex/config.toml
+.codex/agents/
+.codex/hooks/
+.agents/skills/
+.agents/mcp_config.json
+.mcp.json
+.cursor/mcp.json
+.sandbox-kit/
+
+
+target/
+docs/knowledge-kit-usage.md

@@ -1,0 +1,62 @@
+# gedoku-proxy
+
+[日本語](README.ja.md)
+
+A transparent proxy sitting between Claude Code (and other clients) and an Anthropic Messages API–compatible upstream, wired in via `ANTHROPIC_BASE_URL`. Written in Rust / axum.
+
+> See [docs/gedoku-proxy-design.md](docs/gedoku-proxy-design.md) for the detailed design and [docs/specification.md](docs/specification.md) for the spec.
+
+## Status
+
+Currently **P0 (transparent proxy skeleton, no filtering) complete**. Requests/responses are streamed through as-is. JSON structure preservation, detection, and rewriting (the actual "detox" logic) are not yet implemented.
+
+## Layout
+
+```
+src/
+  gedoku-core/           config (Config), error types
+  gedoku-server/         axum handlers / bin crate gedoku-proxy
+  gedoku-mock-upstream/  fake Anthropic server for testing
+```
+
+## Build & Run
+
+```bash
+cargo build --workspace
+cargo run -p gedoku-server --bin gedoku-proxy
+```
+
+Listens on `127.0.0.1:18787` by default and forwards to `https://api.anthropic.com`.
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:18787
+export ANTHROPIC_AUTH_TOKEN=sk-...   # reuse your existing credentials
+```
+
+## Environment Variables
+
+| Variable | Default | Description |
+|---|---|---|
+| `GEDOKU_LISTEN_ADDR` | `127.0.0.1:18787` | Listen address |
+| `GEDOKU_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | Upstream base URL |
+| `GEDOKU_UPSTREAM_AUTH_MODE` | `passthrough` | Credential forwarding mode: `passthrough` / `replace` / `augment` |
+| `GEDOKU_UPSTREAM_AUTH_TOKEN` | none | Token used in `replace`/`augment` mode |
+| `GEDOKU_UPSTREAM_API_KEY` | none | Same, for `x-api-key` |
+| `GEDOKU_EXTRA_UPSTREAM_HEADERS` | none | Extra headers, format: `Name: Value, Name2: Value2` |
+| `GEDOKU_UPSTREAM_ACCEPT_ENCODING` | `identity` | `Accept-Encoding` sent to upstream |
+| `GEDOKU_MAX_REQUEST_BYTES` | `33554432` (32MiB) | Max request body size |
+| `GEDOKU_MODELS_PASSTHROUGH` | `false` | Whether to pass `/v1/models` through to upstream |
+| `GEDOKU_UPSTREAM_CONNECT_TIMEOUT_SECS` | `30` | Upstream connect timeout |
+
+## Testing
+
+```bash
+cargo test --workspace -j 1
+cargo clippy --workspace --all-targets -j 1
+```
+
+> On Windows, running `cargo test --workspace` in parallel can fail with a paging file error (os error 1455). Use `-j 1` to work around it.
+
+## License
+
+MIT

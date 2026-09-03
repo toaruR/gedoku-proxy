@@ -1,0 +1,65 @@
+You will work in a loop until the task meets the bar.
+
+TASK:
+「毒抜きLLMプロキシ (gedoku-proxy)」の設計書を作る。実装（コード）は書かない。
+成果物は、他のエンジニア（またはLLM）がこの設計書だけを読んでゼロから実装に着手できるレベルの、
+アーキテクチャ設計ドキュメント（Markdown）である。
+
+対象は「API互換」ではなく「エンドポイント型」のプロキシとする。すなわち、独自のAPI形式を
+新しく定義するのではなく、対象LLM APIそのものの既存エンドポイント仕様（パス、メソッド、
+リクエスト/レスポンスJSONスキーマ、ストリーミング形式、認証ヘッダ）をそのまま踏襲し、
+クライアント側は接続先ベースURLを1個の環境変数で差し替えるだけで、コード変更なしに
+このプロキシを経由するようになる（Claude Codeにおける ANTHROPIC_BASE_URL の差し替えが好例）。
+プロキシはクライアントとターゲットAPIの間に透過的に割り込み、リクエスト本文中の個人情報・
+APIキー・トークン等をプレースホルダーに置換してからターゲットAPIへ転送し、レスポンスに
+含まれるプレースホルダーは元の値へ復元してクライアントに返す。
+
+SUCCESS CRITERIA (be strict, evaluate the DESIGN DOCUMENT, not code):
+- エンドポイント忠実性の設計 — 対象API（例: Anthropicの /v1/messages）のパス・メソッド・
+  リクエスト/レスポンスJSONスキーマ・認証ヘッダ・ストリーミング形式(SSE)を一次資料レベルで
+  洗い出し、プロキシが1つのBASE_URL環境変数の差し替えのみでドロップイン代替として機能する
+  ことが設計として保証されている。
+- マルチプロバイダ拡張性 — Anthropic以外（OpenAI等、BASE_URL差し替え型のAPIであれば何でも）
+  にも同じ設計パターンを適用できるアダプタ層／抽象化が示されている。
+- データフロー図 — client → proxy → target API → proxy → client の全経路と、非ストリーミング/
+  ストリーミング両方のシーケンス図（または詳細な擬似コード）が含まれている。
+- 検出・置換アルゴリズム設計 — 個人情報／シークレットの検出方式（regex／NER／ハイブリッド等）
+  とその選定理由、プレースホルダーの命名規則、同一値への一貫したマッピング方式が具体的に
+  記述されている。
+- ストリーミング境界処理の設計 — SSEのチャンク境界をまたいでプレースホルダーが分割される
+  ケースの検出・バッファリング・復元アルゴリズムが、擬似コードレベルで具体的に示されている。
+- マッピングストアのセキュリティ設計 — プレースホルダー↔実値マッピングの保存場所（メモリ内/
+  暗号化ストア）、生存期間（セッション終了・TTL）、平文を絶対にディスクへ書かない方針が
+  明記され、脅威モデル（誰から何を守るか）とセットでレビュー可能になっている。
+- ログ／監査設計 — 何が（カテゴリと件数）置換されたかは記録するが、元の機密値そのものは
+  ログに一切出力しない設計であることが明記されている。
+- 誤検出・見逃し対策の設計 — プロキシ自身の認証キーとリクエスト本文中のユーザー由来キー
+  文字列を混同しない仕組み、および検出精度（再現率／適合率）のトレードオフの検討が
+  記述されている。
+- 設定・デプロイ設計 — 検出ルール・除外リスト・転送先ベースURLをコード変更なしに変更する
+  ための設定項目一覧（環境変数／設定ファイル）と、デプロイ形態（コンテナ等）が明記されている。
+- 非機能要件 — レイテンシオーバーヘッドの目標値、可用性・スケーラビリティ方針が定量的に
+  述べられている。
+- 意思決定ログ — 設計上の主要なトレードオフと、それぞれの判断理由（なぜAを選びBを選ばな
+  かったか）が明記され、未解決の課題（Open Questions）が列挙されている。
+
+LOOP PROTOCOL, repeat every turn:
+1. PLAN   - state the single next step.
+2. DO     - produce or improve the design document.
+3. VERIFY - score the result 1-10 on each criterion.
+            Be brutally honest. List exactly what is still weak.
+4. DECIDE - if every criterion is 8+, print FINAL and stop.
+            Otherwise print ITERATING and go again, fixing
+            the weakest point first.
+
+RULES:
+- This is a DESIGN task. Do not write implementation code — pseudo-code,
+  diagrams (Mermaid可), schemas, and prose are fine and expected.
+- Never call it done until every criterion is 8 or higher.
+- Each pass must fix the weakest score from the last VERIFY.
+- Do not ask me questions. Make a sensible assumption
+  (project name: gedoku-proxy, reference target API: Anthropic Messages API
+  via ANTHROPIC_BASE_URL-style replacement, extensible to other providers)
+  and keep going.
+
+Begin.

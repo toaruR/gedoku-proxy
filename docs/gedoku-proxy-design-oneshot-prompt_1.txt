@@ -1,0 +1,95 @@
+You will work in a loop until the task meets the bar.
+
+REFERENCE (normative spec — the design MUST be consistent with these, cite them where relevant):
+- Gateway protocol reference (Claude Codeがゲートウェイに送るリクエストの契約):
+  https://code.claude.com/docs/en/llm-gateway-protocol
+- Connect Claude Code to an LLM gateway (ANTHROPIC_BASE_URL / ANTHROPIC_AUTH_TOKEN / ANTHROPIC_API_KEY / ANTHROPIC_CUSTOM_HEADERS の設定方法):
+  https://code.claude.com/docs/en/llm-gateway-connect
+- Messages API (対象APIのリクエスト/レスポンスJSONスキーマ):
+  https://platform.claude.com/docs/en/api/messages
+
+TASK:
+「毒抜きLLMプロキシ (gedoku-proxy)」の設計書を作る。実装（コード）は書かない。
+成果物は、他のエンジニア（またはLLM）がこの設計書だけを読んでゼロから実装に着手できるレベルの、
+アーキテクチャ設計ドキュメント（Markdown）である。
+
+対象は「独自API互換」ではなく「エンドポイント型」のプロキシとする。すなわち新しいAPI形式を
+定義するのではなく、Claude Codeが `ANTHROPIC_BASE_URL` に設定したURLへ送る既存のリクエスト
+（上記 Gateway protocol reference が定める契約：`/v1/messages` 必須、`/v1/messages/count_tokens`
+任意、`/v1/models` 任意のモデル発見用）をそのまま受け、開発者は環境変数を1つ差し替えるだけで
+コード変更なしにこのプロキシを経由するようになる。プロキシはクライアント（Claude Code等）と
+Anthropic API（またはBedrock/Vertex等の設定されたアップストリーム）の間に透過的に割り込み、
+リクエスト本文中の個人情報・APIキー・トークン等をプレースホルダーに置換してからアップストリームへ
+転送し、レスポンス（非ストリーミング/ストリーミング両方）に含まれるプレースホルダーは元の値へ
+復元してクライアントに返す。
+
+SUCCESS CRITERIA (be strict, evaluate the DESIGN DOCUMENT, not code):
+- エンドポイント忠実性の設計 — Gateway protocol referenceに基づき、`/v1/messages`(必須)、
+  `/v1/messages/count_tokens`(任意、未実装ならmessagesエンドポイント経由へのフォールバックで
+  問題ない旨を明記)、`/v1/models`(任意、モデル発見用)の扱いを仕様マッピング表として整理し、
+  `ANTHROPIC_BASE_URL`の差し替えのみでドロップイン代替として機能することを一次資料に基づいて
+  根拠づけている。
+- ヘッダー転送方針の設計 — `anthropic-version` / `anthropic-beta`（および必要に応じ
+  `anthropic-workspace-id`）を無変更で転送し、`anthropic-*` / `x-claude-code-*` 系ヘッダーは
+  クローズドリストで決め打ちせず「オープンリスト」として扱う（将来Claude Codeが送る未知の
+  ヘッダーも転送され続ける）方針が明記されている。認証は `Authorization: Bearer`
+  （`ANTHROPIC_AUTH_TOKEN`方式）と `x-api-key`（`ANTHROPIC_API_KEY`方式）の両方に対応し、
+  `ANTHROPIC_CUSTOM_HEADERS`で追加されるヘッダーも透過する設計になっている。
+- 真のストリーミング設計 — レスポンスをバッファせずストリームのまま中継し、SSEの`ping`
+  イベントやコメント行も無変更で転送する（Claude Codeは既定で300秒無音でストリームを中断
+  するため、pingを削ると長考中に切断される、という一次資料の制約に対する対策が明記されている）。
+  個人情報・シークレットの検出/プレースホルダー復元がチャンク境界をまたぐケースの処理
+  アルゴリズムが、ストリームを堰き止めないバッファリング戦略込みで擬似コードレベルで
+  示されている。
+- systemブロック構造保存の設計 — Claude Codeが`system`配列の先頭に付与するattribution
+  blockの位置と配列構造（結合・並べ替え・文字列化をしないこと）を保ったまま転送する設計に
+  なっており、`cache_control`マーカーも無変更で転送する方針、およびプレースホルダー置換が
+  決定論的である（同一入力には常に同一プレースホルダーが割り当たる）ことでプロンプト
+  キャッシュのヒット率への影響を最小化する設計上の説明がある。
+- 検出・置換アルゴリズム設計 — 個人情報／シークレットの検出方式（regex／NER／ハイブリッド等）
+  とその選定理由、プレースホルダーの命名規則、同一値への一貫したマッピング方式が具体的に
+  記述されている。
+- マッピングストアのセキュリティ設計 — プレースホルダー↔実値マッピングの保存場所（メモリ内/
+  暗号化ストア）、生存期間（セッション終了・TTL）、平文を絶対にディスクへ書かない方針が
+  明記され、脅威モデル（誰から何を守るか）とセットでレビュー可能になっている。
+- ログ／監査設計 — 何が（カテゴリと件数）置換されたかは記録するが、元の機密値そのものは
+  ログに一切出力しない設計であることが明記されている。
+- エラー透過設計 — アップストリームのエラーレスポンス本文を独自のエンベロープで包まず
+  そのまま返す設計になっており、その理由（Claude Code側のリトライ判定がエラー文言に依存
+  するため、ラップすると`capability_rejected:`等のリカバリ経路が壊れる）が明記されている。
+- 誤検出・混同防止の設計 — プロキシ自身がアップストリーム認証に使う資格情報（環境変数由来の
+  `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`）と、リクエスト本文中にたまたま含まれる
+  ユーザー由来のAPIキー文字列を混同しない仕組みが記述されている。
+- マルチフォーマット拡張性 — Anthropic Messages形式を主軸としつつ、Gateway protocol
+  referenceが挙げる他形式（Bedrock InvokeModel、Vertex rawPredict等、スキーマが異なる
+  アップストリーム）にも同じ検出・置換ロジックを適用できるアダプタ層の設計が示されている。
+- 設定・デプロイ設計 — 検出ルール・除外リスト・転送先ベースURLをコード変更なしに変更する
+  ための設定項目一覧（環境変数／設定ファイル）と、デプロイ形態（コンテナ等）が明記されている。
+- 非機能要件 — レイテンシオーバーヘッドの目標値、可用性・スケーラビリティ方針が定量的に
+  述べられている。
+- 意思決定ログ — 設計上の主要なトレードオフと、それぞれの判断理由（なぜAを選びBを選ばな
+  かったか）が明記され、未解決の課題（Open Questions。例: `/v1/models`モデル発見への対応
+  要否、`count_tokens`実装要否）が列挙されている。
+
+LOOP PROTOCOL, repeat every turn:
+1. PLAN   - state the single next step.
+2. DO     - produce or improve the design document.
+3. VERIFY - score the result 1-10 on each criterion.
+            Be brutally honest. List exactly what is still weak.
+4. DECIDE - if every criterion is 8+, print FINAL and stop.
+            Otherwise print ITERATING and go again, fixing
+            the weakest point first.
+
+RULES:
+- This is a DESIGN task. Do not write implementation code — pseudo-code,
+  diagrams (Mermaid可), schemas, and prose are fine and expected.
+- Treat the REFERENCE section above as normative; if the design and the
+  spec conflict, the spec wins and the design must be corrected.
+- Never call it done until every criterion is 8 or higher.
+- Each pass must fix the weakest score from the last VERIFY.
+- Do not ask me questions. Make a sensible assumption
+  (project name: gedoku-proxy, primary target: ANTHROPIC_BASE_URL /
+  Anthropic Messages format, secondary/optional: Bedrock/Vertex formats)
+  and keep going.
+
+Begin.
