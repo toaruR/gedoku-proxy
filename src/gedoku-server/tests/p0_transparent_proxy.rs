@@ -22,6 +22,7 @@ fn base_config(upstream_base_url: String) -> Config {
         models_passthrough: false,
         unknown_path_policy: UnknownPathPolicy::Passthrough,
         upstream_connect_timeout: Duration::from_secs(5),
+        on_detect_error_fail_open: false,
     }
 }
 

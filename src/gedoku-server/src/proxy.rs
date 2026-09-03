@@ -3,6 +3,7 @@
 //! P0 の範囲では検出・置換を一切行わない。リクエスト／レスポンスのボディは
 //! ストリームのまま素通しし、ヘッダーはオープンリスト方針 (§4.1) に従う。
 
+use crate::redact::{realm_from_headers, Redactor};
 use axum::body::Body;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
@@ -16,6 +17,7 @@ use std::sync::Arc;
 pub struct AppState {
     pub config: Arc<Config>,
     pub client: reqwest::Client,
+    pub redactor: Arc<Redactor>,
 }
 
 /// hop-by-hop ヘッダー (RFC 9110)。設計 §4.3 DROP_HOPBYHOP。
@@ -166,6 +168,65 @@ pub async fn proxy_request(state: &AppState, req: axum::extract::Request) -> Res
         .request(parts.method.clone(), &upstream_url)
         .headers(upstream_headers)
         .body(upstream_body);
+
+    match request.send().await {
+        Ok(upstream_resp) => stream_response(upstream_resp).await,
+        Err(err) => connect_error_response(&err),
+    }
+}
+
+/// 設計 §7.9 `redact_request` の配線。JSON 全体を読み切る必要があるため、
+/// P0 のストリーミング転送 (`proxy_request`) とは別経路にする (`/v1/messages` 専用)。
+pub async fn redacted_messages_proxy(state: &AppState, req: axum::extract::Request) -> Response {
+    let (parts, body) = req.into_parts();
+    let realm = realm_from_headers(&parts.headers);
+
+    let original_bytes = match axum::body::to_bytes(body, usize::MAX).await {
+        Ok(b) => b,
+        Err(err) => {
+            return body_bytes_error_response(
+                StatusCode::BAD_REQUEST,
+                AnthropicError::invalid_request_error(format!(
+                    "failed to read request body: {err}"
+                )),
+            );
+        }
+    };
+
+    let final_body = if original_bytes.len() > state.config.max_request_bytes {
+        // ADR-9: サイズ超過は設定によらず常に fail-open。
+        tracing::warn!(
+            size = original_bytes.len(),
+            limit = state.config.max_request_bytes,
+            "gedoku-proxy: request body exceeds max_request_bytes, forwarding unredacted (fail-open, ADR-9)"
+        );
+        original_bytes.to_vec()
+    } else {
+        match state.redactor.redact_body(&original_bytes, &realm) {
+            Ok(redacted) => redacted,
+            Err(err) => {
+                if state.config.on_detect_error_fail_open {
+                    tracing::warn!(error = %err, "gedoku-proxy: redaction failed, forwarding unredacted (fail-open by config)");
+                    original_bytes.to_vec()
+                } else {
+                    tracing::error!(error = %err, "gedoku-proxy: redaction failed, rejecting request (fail-closed, ADR-9)");
+                    return body_bytes_error_response(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        AnthropicError::api_error(format!("redaction failed: {err}")),
+                    );
+                }
+            }
+        }
+    };
+
+    let upstream_url = build_upstream_url(&state.config, &parts.uri);
+    let upstream_headers = build_upstream_headers(&state.config, &parts.headers);
+
+    let request = state
+        .client
+        .request(parts.method.clone(), &upstream_url)
+        .headers(upstream_headers)
+        .body(final_body);
 
     match request.send().await {
         Ok(upstream_resp) => stream_response(upstream_resp).await,

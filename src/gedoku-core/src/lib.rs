@@ -25,6 +25,22 @@ impl AuthMode {
     }
 }
 
+/// Realm 識別子 (設計 §10.4)。相互に不可視なマッピングストアのスコープ単位。
+/// Realm の導出戦略 (session/credential/global/ephemeral) は P5-T2 で実装する。
+/// P2 時点では呼び出し側 (gedoku-server) が構築済みの ID を渡す。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RealmId(pub String);
+
+impl RealmId {
+    pub fn new(id: impl Into<String>) -> Self {
+        RealmId(id.into())
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// 未知パスの扱い (設計 §3.1 #9)。v1 では passthrough のみサポート。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnknownPathPolicy {
@@ -44,6 +60,10 @@ pub struct Config {
     pub models_passthrough: bool,
     pub unknown_path_policy: UnknownPathPolicy,
     pub upstream_connect_timeout: Duration,
+    /// ADR-9: 検出エンジン障害 (JSON parse 失敗含む) 時の既定挙動。
+    /// `true` (fail_open) なら未加工のまま転送、既定 `false` (fail_closed) は拒否する。
+    /// サイズ超過 (`max_request_bytes`) は本設定によらず常に fail-open (ADR-9 非対称性)。
+    pub on_detect_error_fail_open: bool,
 }
 
 impl Config {
@@ -80,6 +100,9 @@ impl Config {
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(30),
             ),
+            on_detect_error_fail_open: env::var("GEDOKU_ON_DETECT_ERROR")
+                .map(|v| v.eq_ignore_ascii_case("fail_open"))
+                .unwrap_or(false),
         }
     }
 }

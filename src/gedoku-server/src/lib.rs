@@ -1,14 +1,16 @@
 //! gedoku-server: axum ハンドラの配線 (計画 §3, P0 一式)。
 
 pub mod proxy;
+pub mod redact;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{any, get, head};
+use axum::routing::{any, get, head, post};
 use axum::Router;
 use gedoku_core::Config;
 use http::StatusCode;
 use proxy::{generic_proxy, AppState};
+use redact::Redactor;
 use std::sync::Arc;
 
 /// 設計 §3.1 #1: `/v1/health` 相当のヘルスチェック (P0-T1)。
@@ -50,8 +52,18 @@ pub fn build_router(config: Arc<Config>) -> Router {
     build_router_with_client(config, client)
 }
 
+/// 設計 §7.9: `/v1/messages` はボディ全体を読み切って検出/置換を行う専用経路。
+async fn messages(State(state): State<AppState>, req: axum::extract::Request) -> Response {
+    proxy::redacted_messages_proxy(&state, req).await
+}
+
 pub fn build_router_with_client(config: Arc<Config>, client: reqwest::Client) -> Router {
-    let state = AppState { config, client };
+    let redactor = Arc::new(Redactor::new());
+    let state = AppState {
+        config,
+        client,
+        redactor,
+    };
 
     Router::new()
         .route("/health", get(health))
@@ -60,6 +72,7 @@ pub fn build_router_with_client(config: Arc<Config>, client: reqwest::Client) ->
             "/v1/messages/count_tokens",
             any(count_tokens_not_implemented),
         )
+        .route("/v1/messages", post(messages))
         .route("/v1/models", get(models))
         .fallback(any(generic_proxy))
         .with_state(state)

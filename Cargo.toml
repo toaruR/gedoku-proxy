@@ -5,6 +5,8 @@ members = [
     "src/gedoku-server",
     "src/gedoku-mock-upstream",
     "src/gedoku-jsonwalk",
+    "src/gedoku-detect",
+    "src/gedoku-mapstore",
 ]
 
 [workspace.package]
@@ -25,8 +27,16 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-sha2 = "0.10"
+sha2 = "0.11"
 hex = "0.4"
 anyhow = "1"
 thiserror = "1"
 async-stream = "0.3"
+regex = "1"
+aes-gcm = "0.11"
+hkdf = "0.13"
+hmac = "0.13"
+zeroize = "1"
+unicode-normalization = "0.1"
+lru = "0.18"
+crc32fast = "1"

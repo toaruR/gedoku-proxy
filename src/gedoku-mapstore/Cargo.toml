@@ -1,0 +1,21 @@
+[package]
+name = "gedoku-mapstore"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+gedoku-core = { path = "../gedoku-core" }
+aes-gcm.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+unicode-normalization.workspace = true
+lru.workspace = true
+thiserror.workspace = true
+rand = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

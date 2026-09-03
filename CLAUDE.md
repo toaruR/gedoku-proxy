@@ -47,4 +47,8 @@ planモードで作成したマークダウンファイルは、<プロジェク
 - **Windows環境で `cargo test --workspace` が `ページング ファイルが小さすぎる` (os error 1455) で失敗する**: rlib の mmap がページファイル不足で落ちる。既定の並列ジョブ数(コア数)だと再現する。`cargo test --workspace -j 1` で回避可能。`cargo build` 単体は通ることがあるが `test` は複数バイナリを並行コンパイルするため踏みやすい。
 - **HTTPヘッダー名にUnicode文字は使えない**: `HeaderValue`/`HeaderName` はASCIIのみ許容。オープンリスト転送のテストで日本語ヘッダー名(`x-未定義-...`)を使うと `InvalidHeaderName` で落ちる。テストヘッダー名はASCIIにする。
 - **`serde_json` の `arbitrary_precision` でも指数表記の符号は正規化される**: `1e10` を入力すると再直列化時に `1e+10` になる(`+`が挿入される)。桁・小数点位置(`1.50`→`1.5`にしない等)は保持されるが、指数部の符号だけは例外。バイト完全一致テストの数値フィクスチャは `1e+10` のように符号付きで書く。
+- **`hmac`/`hkdf` 0.13系と `sha2` 0.10系は `digest` のメジャーバージョンが食い違い共存不可**: `hmac 0.13`/`hkdf 0.13` は `digest 0.11` 系、`sha2 0.10` は `digest 0.10` 系を要求するため `HashMarker is not implemented` 等のトレイト不一致でビルドが落ちる。`sha2` は `0.11` を使うこと(workspace 全体で1系統に揃える)。`Hmac::new_from_slice` は `hmac::KeyInit` を `use` しないと呼べない。
+- **`aes-gcm` 0.11 で API が刷新されている**: `AeadCore::generate_nonce(&mut OsRng)` は無く `Nonce::generate()` を使う。`Key::<Aes256Gcm>::from_slice`/`Nonce::from_slice` は非推奨、`TryFrom<&[u8]>` を使う。`aead::{Aead, Generate, KeyInit}` を import する。
+- **正規表現ベースのエントロピー検出でトークン文字クラスに `=` を含めると代入文脈を見失う**: `[A-Za-z0-9+/=_-]+` のように `=` を本体に含めると `KEY=value` が1トークンに融合し、マッチ開始位置が値の直前の `=` を越えるため直前文脈(`KEY=`)を検出できなくなる。`=` は `[...]+=*` のように末尾パディング専用として分離すること。
+- **workspace の `reqwest` は `json` feature 無効**: `default-features = false, features = ["rustls-tls", "stream"]` のため `RequestBuilder::json()` が存在しない。テスト等で JSON ボディを送るときは `serde_json::to_vec(&value).unwrap()` を `.body()` に渡すこと。
 <!-- knowledge-kit:end section=gotchas -->
