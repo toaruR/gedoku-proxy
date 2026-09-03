@@ -2,6 +2,7 @@
 
 pub mod proxy;
 pub mod redact;
+pub mod restore;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};

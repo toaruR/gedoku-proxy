@@ -14,6 +14,7 @@ gedoku-core = { path = "../gedoku-core" }
 gedoku-jsonwalk = { path = "../gedoku-jsonwalk" }
 gedoku-detect = { path = "../gedoku-detect" }
 gedoku-mapstore = { path = "../gedoku-mapstore" }
+gedoku-stream = { path = "../gedoku-stream" }
 tokio.workspace = true
 axum.workspace = true
 reqwest.workspace = true
@@ -21,6 +22,7 @@ http.workspace = true
 http-body-util.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+async-stream.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tracing.workspace = true

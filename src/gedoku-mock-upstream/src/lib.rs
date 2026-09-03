@@ -46,6 +46,15 @@ pub enum ResponseSpec {
         chunks: Vec<Bytes>,
         delay_between: Duration,
     },
+    /// 受信したリクエストボディをそのままレスポンスとしてエコーし、指定した
+    /// バイト境界 (昇順) で複数チャンクに分割して送出する (計画 §8.2
+    /// `split_at_bytes` 相当、P3: ストリーム復元のチャンク境界網羅テスト用)。
+    EchoRequestBody {
+        status: StatusCode,
+        headers: Vec<(String, String)>,
+        split_at_bytes: Vec<usize>,
+        delay_between: Duration,
+    },
 }
 
 impl ResponseSpec {
@@ -142,7 +151,7 @@ async fn handler(State(state): State<Arc<MockState>>, req: Request) -> Response 
         method: parts.method.clone(),
         uri: parts.uri.clone(),
         headers: parts.headers.clone(),
-        body: body_bytes,
+        body: body_bytes.clone(),
     });
 
     match state.response.clone() {
@@ -185,5 +194,46 @@ async fn handler(State(state): State<Arc<MockState>>, req: Request) -> Response 
                 .body(Body::from_stream(stream))
                 .expect("build response")
         }
+        ResponseSpec::EchoRequestBody {
+            status,
+            headers,
+            split_at_bytes,
+            delay_between,
+        } => {
+            let mut builder = Response::builder().status(status);
+            for (name, value) in headers {
+                builder = builder.header(
+                    HeaderName::from_bytes(name.as_bytes()).expect("header name"),
+                    HeaderValue::from_str(&value).expect("header value"),
+                );
+            }
+            let chunks = split_bytes(&body_bytes, &split_at_bytes);
+            let stream = async_stream::stream! {
+                for chunk in chunks {
+                    if !delay_between.is_zero() {
+                        tokio::time::sleep(delay_between).await;
+                    }
+                    yield Ok::<_, std::io::Error>(chunk);
+                }
+            };
+            builder
+                .body(Body::from_stream(stream))
+                .expect("build response")
+        }
     }
+}
+
+/// `points` (昇順のバイト境界) で `body` を分割する。境界は自動的に
+/// `[0, body.len()]` の範囲へクランプ・重複排除される。
+fn split_bytes(body: &Bytes, points: &[usize]) -> Vec<Bytes> {
+    let mut bounds: Vec<usize> = std::iter::once(0)
+        .chain(points.iter().copied().map(|p| p.min(body.len())))
+        .chain(std::iter::once(body.len()))
+        .collect();
+    bounds.dedup();
+    bounds
+        .windows(2)
+        .map(|w| body.slice(w[0]..w[1]))
+        .filter(|c| !c.is_empty())
+        .collect()
 }

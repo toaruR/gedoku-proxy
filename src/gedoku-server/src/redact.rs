@@ -3,8 +3,14 @@
 use gedoku_core::RealmId;
 use gedoku_detect::{Detection, DetectionEngine};
 use gedoku_jsonwalk::JsonWalkError;
-use gedoku_mapstore::{MappingStoreConfig, MemoryMappingStore, SecretString};
+use gedoku_mapstore::{
+    MappingStore, MappingStoreConfig, MemoryMappingStore, Placeholder, PlaceholderId, SecretString,
+};
 use sha2::{Digest, Sha256};
+
+/// `MappingStore::resolve` は `Placeholder::id` のみをキーに引く (`category` は
+/// HMAC 計算にしか使わない、計画 P3)。復元時はカテゴリ情報を持たないため固定値を渡す。
+const RESTORE_LOOKUP_CATEGORY: &str = "RESTORE_LOOKUP";
 
 pub struct Redactor {
     engine: DetectionEngine,
@@ -44,6 +50,19 @@ impl Redactor {
             }
         }
         gedoku_jsonwalk::to_bytes(&value)
+    }
+
+    /// §12: レスポンスストリーム復元 (計画 P3) が使う。プレースホルダー ID から原文を
+    /// 引く。未知/失効 ID は `None` (呼び出し側はフェイルオープンでスキャンした生
+    /// バイト列をそのまま転送する)。
+    pub fn resolve_placeholder(&self, realm: &RealmId, id: &str) -> Option<String> {
+        let placeholder = Placeholder {
+            category: RESTORE_LOOKUP_CATEGORY,
+            id: PlaceholderId::from_scanned(id.to_string()),
+        };
+        self.store
+            .resolve(realm, &placeholder)
+            .map(|s| s.expose_secret().to_string())
     }
 
     fn substitute(&self, text: &str, detections: &[Detection], realm: &RealmId) -> String {

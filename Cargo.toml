@@ -7,6 +7,7 @@ members = [
     "src/gedoku-jsonwalk",
     "src/gedoku-detect",
     "src/gedoku-mapstore",
+    "src/gedoku-stream",
 ]
 
 [workspace.package]

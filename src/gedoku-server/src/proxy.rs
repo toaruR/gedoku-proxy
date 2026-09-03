@@ -121,7 +121,7 @@ fn apply_credentials(out: &mut HeaderMap, in_headers: &HeaderMap, config: &Confi
 }
 
 /// レスポンスヘッダーの開放リスト転送 (設計 GAP-6反映)。hop-by-hop のみ落とす。
-fn build_downstream_headers(upstream_headers: &http::HeaderMap) -> HeaderMap {
+pub(crate) fn build_downstream_headers(upstream_headers: &http::HeaderMap) -> HeaderMap {
     let conn_tokens: Vec<String> = upstream_headers
         .get_all(http::header::CONNECTION)
         .iter()
@@ -229,7 +229,9 @@ pub async fn redacted_messages_proxy(state: &AppState, req: axum::extract::Reque
         .body(final_body);
 
     match request.send().await {
-        Ok(upstream_resp) => stream_response(upstream_resp).await,
+        Ok(upstream_resp) => {
+            crate::restore::restore_response(upstream_resp, state.redactor.clone(), realm).await
+        }
         Err(err) => connect_error_response(&err),
     }
 }

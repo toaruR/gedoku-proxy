@@ -17,6 +17,14 @@ impl PlaceholderId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// レスポンスストリームから走査した生の ID 文字列から再構築する (計画 P3)。
+    /// `resolve` は ID のみをキーに引くため (§10.5 `RealmState::entries` 参照)、
+    /// 文字集合の妥当性検証は呼び出し側 (`gedoku-stream::TailHoldScanner`) の責務とし、
+    /// ここでは検証しない。未知 ID は単に `resolve` が `None` を返すだけで安全。
+    pub fn from_scanned(raw: String) -> Self {
+        PlaceholderId(raw)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
