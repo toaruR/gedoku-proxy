@@ -8,6 +8,7 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, head, post};
 use axum::Router;
+use gedoku_audit::LogGuard;
 use gedoku_core::Config;
 use http::StatusCode;
 use proxy::{generic_proxy, AppState};
@@ -53,6 +54,20 @@ pub fn build_router(config: Arc<Config>) -> Router {
     build_router_with_client(config, client)
 }
 
+/// `main.rs` から呼ぶ配線。`log_guard` は `tracing_subscriber` の writer と共有
+/// する必要があるため、呼び出し側で1つ生成したインスタンスを受け取る
+/// (設計 §12.4、計画 P4-T2)。
+pub fn build_router_with_guard(config: Arc<Config>, log_guard: LogGuard) -> Router {
+    let client = build_client(&config);
+    let redactor = Arc::new(Redactor::with_log_guard(log_guard));
+    let state = AppState {
+        config,
+        client,
+        redactor,
+    };
+    build_router_from_state(state)
+}
+
 /// 設計 §7.9: `/v1/messages` はボディ全体を読み切って検出/置換を行う専用経路。
 async fn messages(State(state): State<AppState>, req: axum::extract::Request) -> Response {
     proxy::redacted_messages_proxy(&state, req).await
@@ -65,7 +80,10 @@ pub fn build_router_with_client(config: Arc<Config>, client: reqwest::Client) ->
         client,
         redactor,
     };
+    build_router_from_state(state)
+}
 
+fn build_router_from_state(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health))
         .route("/api/hello", head(hello))

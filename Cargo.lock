@@ -428,6 +428,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "gedoku-audit"
+version = "0.1.0"
+dependencies = [
+ "aho-corasick",
+ "serde_json",
+ "sha2",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gedoku-core"
 version = "0.1.0"
 dependencies = [
@@ -493,6 +504,7 @@ dependencies = [
  "axum",
  "bytes",
  "futures-util",
+ "gedoku-audit",
  "gedoku-core",
  "gedoku-detect",
  "gedoku-jsonwalk",

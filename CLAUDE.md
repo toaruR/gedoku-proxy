@@ -51,4 +51,5 @@ planモードで作成したマークダウンファイルは、<プロジェク
 - **`aes-gcm` 0.11 で API が刷新されている**: `AeadCore::generate_nonce(&mut OsRng)` は無く `Nonce::generate()` を使う。`Key::<Aes256Gcm>::from_slice`/`Nonce::from_slice` は非推奨、`TryFrom<&[u8]>` を使う。`aead::{Aead, Generate, KeyInit}` を import する。
 - **正規表現ベースのエントロピー検出でトークン文字クラスに `=` を含めると代入文脈を見失う**: `[A-Za-z0-9+/=_-]+` のように `=` を本体に含めると `KEY=value` が1トークンに融合し、マッチ開始位置が値の直前の `=` を越えるため直前文脈(`KEY=`)を検出できなくなる。`=` は `[...]+=*` のように末尾パディング専用として分離すること。
 - **workspace の `reqwest` は `json` feature 無効**: `default-features = false, features = ["rustls-tls", "stream"]` のため `RequestBuilder::json()` が存在しない。テスト等で JSON ボディを送るときは `serde_json::to_vec(&value).unwrap()` を `.body()` に渡すこと。
+- **`async_stream::stream!` 内のクロージャで `Cell<T>` を使うと `Body::from_stream` が `future cannot be sent between threads safely` で落ちる**: `axum::body::Body::from_stream` は `Send` を要求するため、ストリーム内で複数回呼ぶクロージャが `!Sync` な `Cell`/`RefCell` をキャプチャしていると通らない (`Fn(&self)` の再入クロージャは `Send` だが中身の `Cell` が非 `Sync`)。カウンタ等の可変状態は `std::sync::atomic::AtomicU64`(`Ordering::Relaxed`)にすること。
 <!-- knowledge-kit:end section=gotchas -->

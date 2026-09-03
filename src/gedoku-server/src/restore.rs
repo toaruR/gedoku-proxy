@@ -15,8 +15,14 @@ use futures_util::StreamExt;
 use gedoku_core::RealmId;
 use gedoku_stream::TailHoldScanner;
 use http::StatusCode;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+
+/// §12.2 restoration イベント用の単一バケット名。tail-hold スキャナはカテゴリを
+/// 呼び出し側へ渡さない (ID のみ) ため、カテゴリ別ではなく総数のみを集計する。
+const RESTORED_BUCKET: &str = "RESTORED";
 
 /// tail-hold 保留中のバイト列を無条件で吐き出すまでの最大待ち時間
 /// (設計 §12 の 50ms 上限。バイト上限は `gedoku_stream::MAX_HOLD_BYTES` 側)。
@@ -33,6 +39,8 @@ pub async fn restore_response(
 
     let body_stream = async_stream::stream! {
         let mut scanner = TailHoldScanner::new();
+        let restored_count = AtomicU64::new(0);
+        let miss_count = AtomicU64::new(0);
         loop {
             let next = if scanner.has_pending() {
                 match tokio::time::timeout(STALE_HOLD_TIMEOUT, upstream.next()).await {
@@ -51,7 +59,18 @@ pub async fn restore_response(
 
             match next {
                 Some(Ok(chunk)) => {
-                    let resolver = |id: &str| redactor.resolve_placeholder(&realm, id);
+                    let resolver = |id: &str| {
+                        let resolved = redactor.resolve_placeholder(&realm, id);
+                        match &resolved {
+                            Some(_) => {
+                                restored_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                            None => {
+                                miss_count.fetch_add(1, Ordering::Relaxed);
+                            }
+                        }
+                        resolved
+                    };
                     let out = scanner.feed(&chunk, &resolver);
                     if !out.is_empty() {
                         yield Ok(Bytes::from(out));
@@ -70,6 +89,13 @@ pub async fn restore_response(
                 }
             }
         }
+
+        let mut restored: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let restored_total = restored_count.load(Ordering::Relaxed);
+        if restored_total > 0 {
+            restored.insert(RESTORED_BUCKET, restored_total);
+        }
+        redactor.emit_restoration_event(&realm, restored, miss_count.load(Ordering::Relaxed));
     };
 
     let body = Body::from_stream(body_stream);

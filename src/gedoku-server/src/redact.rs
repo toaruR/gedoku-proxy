@@ -1,5 +1,6 @@
 //! リクエストボディへの検出/置換ワイヤリング (設計 §7.9, 計画 P2-T7)。
 
+use gedoku_audit::{LogGuard, RedactionRecord, RestorationRecord};
 use gedoku_core::RealmId;
 use gedoku_detect::{Detection, DetectionEngine};
 use gedoku_jsonwalk::JsonWalkError;
@@ -7,6 +8,7 @@ use gedoku_mapstore::{
     MappingStore, MappingStoreConfig, MemoryMappingStore, Placeholder, PlaceholderId, SecretString,
 };
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// `MappingStore::resolve` は `Placeholder::id` のみをキーに引く (`category` は
 /// HMAC 計算にしか使わない、計画 P3)。復元時はカテゴリ情報を持たないため固定値を渡す。
@@ -15,14 +17,12 @@ const RESTORE_LOOKUP_CATEGORY: &str = "RESTORE_LOOKUP";
 pub struct Redactor {
     engine: DetectionEngine,
     store: MemoryMappingStore,
+    log_guard: LogGuard,
 }
 
 impl Default for Redactor {
     fn default() -> Self {
-        Redactor {
-            engine: DetectionEngine::default(),
-            store: MemoryMappingStore::new(MappingStoreConfig::default()),
-        }
+        Self::with_log_guard(LogGuard::stdout())
     }
 }
 
@@ -31,11 +31,30 @@ impl Redactor {
         Self::default()
     }
 
+    /// 監査ログの出口ガード (設計 §12.4) を外部と共有した状態で構築する。
+    /// `main.rs` は同じ `LogGuard` を `tracing_subscriber` の writer にも渡すため、
+    /// このコンストラクタで受け取ったインスタンスをそのまま保持する。
+    pub fn with_log_guard(log_guard: LogGuard) -> Self {
+        Redactor {
+            engine: DetectionEngine::default(),
+            store: MemoryMappingStore::new(MappingStoreConfig::default()),
+            log_guard,
+        }
+    }
+
     /// §7.9 `redact_request` の実装。L0 (`gedoku-jsonwalk`) が列挙したスキャン対象
     /// リーフのみを検出エンジンにかけ、検出区間をプレースホルダーへ置換する。
     /// 禁止パス (§7.3) はそもそも列挙されないため触れようがない。構造は不変。
-    pub fn redact_body(&self, body: &[u8], realm: &RealmId) -> Result<Vec<u8>, JsonWalkError> {
+    /// §12.2 の `redaction` 監査イベントも件数のみ (原値は含まない) で発行する。
+    pub fn redact_body(
+        &self,
+        body: &[u8],
+        realm: &RealmId,
+        path: &str,
+    ) -> Result<Vec<u8>, JsonWalkError> {
         let mut value = gedoku_jsonwalk::parse(body)?;
+        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut unique_values: std::collections::HashSet<String> = std::collections::HashSet::new();
         for target in gedoku_jsonwalk::collect_scan_targets(&value) {
             let Some(text) = value.pointer(&target.pointer).and_then(|v| v.as_str()) else {
                 continue;
@@ -44,12 +63,46 @@ impl Redactor {
             if detections.is_empty() {
                 continue;
             }
+            for d in &detections {
+                *counts.entry(d.category).or_insert(0) += 1;
+                unique_values.insert(d.text(text).to_string());
+                // §12.4 最後の防壁: 検出した原文をログ出口ガードへ登録する。
+                self.log_guard.register_secret(d.text(text));
+            }
             let redacted = self.substitute(text, &detections, realm);
             if let Some(slot) = value.pointer_mut(&target.pointer) {
                 *slot = serde_json::Value::String(redacted);
             }
         }
-        gedoku_jsonwalk::to_bytes(&value)
+        let out = gedoku_jsonwalk::to_bytes(&value)?;
+        if !counts.is_empty() {
+            gedoku_audit::emit_redaction(&RedactionRecord {
+                realm_id: realm.as_str(),
+                path,
+                request_bytes_in: body.len(),
+                request_bytes_out: out.len(),
+                counts,
+                unique_values: unique_values.len(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// §12.2 の `restoration` 監査イベントを発行する (計画 P3 のストリーム復元と連携)。
+    pub fn emit_restoration_event(
+        &self,
+        realm: &RealmId,
+        restored: BTreeMap<&'static str, u64>,
+        misses: u64,
+    ) {
+        if restored.is_empty() && misses == 0 {
+            return;
+        }
+        gedoku_audit::emit_restoration(&RestorationRecord {
+            realm_id: realm.as_str(),
+            restored,
+            misses,
+        });
     }
 
     /// §12: レスポンスストリーム復元 (計画 P3) が使う。プレースホルダー ID から原文を
@@ -127,7 +180,11 @@ mod tests {
             }]
         });
         let out_bytes = redactor
-            .redact_body(&serde_json::to_vec(&body).unwrap(), &realm())
+            .redact_body(
+                &serde_json::to_vec(&body).unwrap(),
+                &realm(),
+                "/v1/messages",
+            )
             .unwrap();
         let out: serde_json::Value = serde_json::from_slice(&out_bytes).unwrap();
         let text = out["messages"][0]["content"].as_str().unwrap();
@@ -151,7 +208,11 @@ mod tests {
             }]
         });
         let out_bytes = redactor
-            .redact_body(&serde_json::to_vec(&body).unwrap(), &realm())
+            .redact_body(
+                &serde_json::to_vec(&body).unwrap(),
+                &realm(),
+                "/v1/messages",
+            )
             .unwrap();
         let out: serde_json::Value = serde_json::from_slice(&out_bytes).unwrap();
         assert_eq!(
@@ -170,7 +231,11 @@ mod tests {
             ]
         });
         let out_bytes = redactor
-            .redact_body(&serde_json::to_vec(&body).unwrap(), &realm())
+            .redact_body(
+                &serde_json::to_vec(&body).unwrap(),
+                &realm(),
+                "/v1/messages",
+            )
             .unwrap();
         let out: serde_json::Value = serde_json::from_slice(&out_bytes).unwrap();
         let a = out["messages"][0]["content"].as_str().unwrap();
@@ -187,7 +252,9 @@ mod tests {
         let redactor = Redactor::new();
         let input =
             br#"{"model":"claude-x","max_tokens":16,"messages":[{"role":"user","content":"hi"}]}"#;
-        let out = redactor.redact_body(input, &realm()).unwrap();
+        let out = redactor
+            .redact_body(input, &realm(), "/v1/messages")
+            .unwrap();
         assert_eq!(out, input);
     }
 

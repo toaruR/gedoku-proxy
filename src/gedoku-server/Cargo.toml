@@ -15,6 +15,7 @@ gedoku-jsonwalk = { path = "../gedoku-jsonwalk" }
 gedoku-detect = { path = "../gedoku-detect" }
 gedoku-mapstore = { path = "../gedoku-mapstore" }
 gedoku-stream = { path = "../gedoku-stream" }
+gedoku-audit = { path = "../gedoku-audit" }
 tokio.workspace = true
 axum.workspace = true
 reqwest.workspace = true

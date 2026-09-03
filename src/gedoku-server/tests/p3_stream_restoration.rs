@@ -118,7 +118,12 @@ async fn placeholder_split_at_every_byte_offset_still_restores() {
 
     let realm = gedoku_core::RealmId::new("anonymous");
     let probe = gedoku_server::redact::Redactor::new();
-    let redacted = String::from_utf8(probe.redact_body(&request_bytes, &realm).unwrap()).unwrap();
+    let redacted = String::from_utf8(
+        probe
+            .redact_body(&request_bytes, &realm, "/v1/messages")
+            .unwrap(),
+    )
+    .unwrap();
     let ph_start = redacted
         .find("\u{27E6}GDK:SECRET:")
         .expect("secret must be redacted for this fixture");

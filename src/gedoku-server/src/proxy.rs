@@ -202,7 +202,10 @@ pub async fn redacted_messages_proxy(state: &AppState, req: axum::extract::Reque
         );
         original_bytes.to_vec()
     } else {
-        match state.redactor.redact_body(&original_bytes, &realm) {
+        match state
+            .redactor
+            .redact_body(&original_bytes, &realm, parts.uri.path())
+        {
             Ok(redacted) => redacted,
             Err(err) => {
                 if state.config.on_detect_error_fail_open {
