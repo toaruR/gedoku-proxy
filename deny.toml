@@ -1,0 +1,23 @@
+# 計画 P5-T8, §12: 依存ライセンス監査 (`cargo deny check licenses` を CI でブロッキング実行)。
+# OQ-10: 非公開前提で開発、依存クレートは MIT/Apache-2.0 互換のみを選定済み。
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "CDLA-Permissive-2.0", # webpki-roots (Mozilla CA証明書データ)
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

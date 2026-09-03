@@ -1,6 +1,6 @@
 //! gedoku-core: 設定・エラー型・共通定義 (設計 §3-5, §13)
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
 
@@ -47,6 +47,45 @@ pub enum UnknownPathPolicy {
     Passthrough,
 }
 
+/// Realm 導出戦略 (設計 §10.4, 計画 P5-T2, OQ-2)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RealmStrategy {
+    /// クライアント資格情報 (x-api-key/Authorization) のハッシュを Realm とする (既定、OQ-2)。
+    Credential,
+    /// 全リクエストを単一 Realm に集約する。
+    Global,
+    /// 呼び出し毎に新規 Realm を発行する (マッピングを一切再利用しない)。
+    Ephemeral,
+}
+
+impl RealmStrategy {
+    fn from_str_lenient(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "global" => RealmStrategy::Global,
+            "ephemeral" => RealmStrategy::Ephemeral,
+            _ => RealmStrategy::Credential,
+        }
+    }
+}
+
+/// 検出/置換の適用モード (設計 §19, GAP-7, OQ-3, 計画 P5-T6)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 検出のみ行い監査ログに出すが、本文は無変更で転送する。
+    Observe,
+    /// 検出した秘密をプレースホルダーへ置換する (既定、OQ-3: 本番影響ゼロを優先し既定off)。
+    Enforce,
+}
+
+impl Mode {
+    fn from_str_lenient(s: &str) -> Self {
+        match s.to_ascii_lowercase().as_str() {
+            "observe" => Mode::Observe,
+            _ => Mode::Enforce,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub listen_addr: String,
@@ -64,6 +103,10 @@ pub struct Config {
     /// `true` (fail_open) なら未加工のまま転送、既定 `false` (fail_closed) は拒否する。
     /// サイズ超過 (`max_request_bytes`) は本設定によらず常に fail-open (ADR-9 非対称性)。
     pub on_detect_error_fail_open: bool,
+    /// Realm 導出戦略 (計画 P5-T2)。
+    pub realm_strategy: RealmStrategy,
+    /// 検出/置換の適用モード (計画 P5-T6)。
+    pub mode: Mode,
 }
 
 impl Config {
@@ -103,8 +146,143 @@ impl Config {
             on_detect_error_fail_open: env::var("GEDOKU_ON_DETECT_ERROR")
                 .map(|v| v.eq_ignore_ascii_case("fail_open"))
                 .unwrap_or(false),
+            realm_strategy: env::var("GEDOKU_REALM_STRATEGY")
+                .map(|s| RealmStrategy::from_str_lenient(&s))
+                .unwrap_or(RealmStrategy::Credential),
+            mode: env::var("GEDOKU_MODE")
+                .map(|s| Mode::from_str_lenient(&s))
+                .unwrap_or(Mode::Enforce),
         }
     }
+
+    /// TOML 文字列から設定を読み込む (計画 P5-T1)。未知キー/型不一致は `Err` で返す
+    /// (`#[serde(deny_unknown_fields)]`)。ファイルに記載しないフィールドは `from_env` と
+    /// 同じ既定値を採用する (環境変数は参照しない、ファイル内容のみで完結させる)。
+    pub fn from_toml_str(raw: &str) -> Result<Config, ConfigError> {
+        let file: FileConfig = toml::from_str(raw)?;
+        let defaults = Config::from_env_defaults_only();
+        Ok(Config {
+            listen_addr: file.listen_addr.unwrap_or(defaults.listen_addr),
+            upstream_base_url: file.upstream_base_url.unwrap_or(defaults.upstream_base_url),
+            auth_mode: file
+                .auth_mode
+                .as_deref()
+                .map(AuthMode::from_env_str)
+                .unwrap_or(defaults.auth_mode),
+            upstream_auth_token: file.upstream_auth_token,
+            upstream_api_key: file.upstream_api_key,
+            extra_upstream_headers: file
+                .extra_upstream_headers
+                .into_iter()
+                .map(|h| (h.name, h.value))
+                .collect(),
+            upstream_accept_encoding: file
+                .upstream_accept_encoding
+                .unwrap_or(defaults.upstream_accept_encoding),
+            max_request_bytes: file.max_request_bytes.unwrap_or(defaults.max_request_bytes),
+            models_passthrough: file
+                .models_passthrough
+                .unwrap_or(defaults.models_passthrough),
+            unknown_path_policy: UnknownPathPolicy::Passthrough,
+            upstream_connect_timeout: file
+                .upstream_connect_timeout_secs
+                .map(Duration::from_secs)
+                .unwrap_or(defaults.upstream_connect_timeout),
+            on_detect_error_fail_open: file
+                .on_detect_error
+                .as_deref()
+                .map(|v| v.eq_ignore_ascii_case("fail_open"))
+                .unwrap_or(defaults.on_detect_error_fail_open),
+            realm_strategy: file
+                .realm_strategy
+                .as_deref()
+                .map(RealmStrategy::from_str_lenient)
+                .unwrap_or(defaults.realm_strategy),
+            mode: file
+                .mode
+                .as_deref()
+                .map(Mode::from_str_lenient)
+                .unwrap_or(defaults.mode),
+        })
+    }
+
+    /// 設定ファイルのパスを引数に取るバージョン (計画 P5-T1)。
+    pub fn from_toml_file(path: &str) -> Result<Config, ConfigError> {
+        let raw = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_string(),
+            source,
+        })?;
+        Config::from_toml_str(&raw)
+    }
+
+    /// `GEDOKU_CONFIG_FILE` が設定されていればそのファイルから、なければ環境変数から
+    /// 設定を読み込む (計画 P5-T1)。不正な設定ファイルは起動を失敗させる (`panic`)。
+    pub fn load() -> Config {
+        match env::var("GEDOKU_CONFIG_FILE") {
+            Ok(path) => Config::from_toml_file(&path)
+                .unwrap_or_else(|e| panic!("gedoku-proxy: invalid config file: {e}")),
+            Err(_) => Config::from_env(),
+        }
+    }
+
+    /// `from_toml_str` が「ファイル未指定フィールドの既定値」として使う。環境変数は
+    /// 参照しないよう `from_env` から意図的に切り離す (テスト時の環境汚染を避けるため)。
+    fn from_env_defaults_only() -> Config {
+        Config {
+            listen_addr: "127.0.0.1:18787".to_string(),
+            upstream_base_url: "https://api.anthropic.com".to_string(),
+            auth_mode: AuthMode::Passthrough,
+            upstream_auth_token: None,
+            upstream_api_key: None,
+            extra_upstream_headers: Vec::new(),
+            upstream_accept_encoding: "identity".to_string(),
+            max_request_bytes: 32 * 1024 * 1024,
+            models_passthrough: false,
+            unknown_path_policy: UnknownPathPolicy::Passthrough,
+            upstream_connect_timeout: Duration::from_secs(30),
+            on_detect_error_fail_open: false,
+            realm_strategy: RealmStrategy::Credential,
+            mode: Mode::Enforce,
+        }
+    }
+}
+
+/// TOML から直接デシリアライズする素の設定形。未知キーはエラーにする (P5-T1 DoD)。
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileConfig {
+    listen_addr: Option<String>,
+    upstream_base_url: Option<String>,
+    auth_mode: Option<String>,
+    upstream_auth_token: Option<String>,
+    upstream_api_key: Option<String>,
+    extra_upstream_headers: Vec<FileHeaderPair>,
+    upstream_accept_encoding: Option<String>,
+    max_request_bytes: Option<usize>,
+    models_passthrough: Option<bool>,
+    upstream_connect_timeout_secs: Option<u64>,
+    on_detect_error: Option<String>,
+    realm_strategy: Option<String>,
+    mode: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FileHeaderPair {
+    name: String,
+    value: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to read config file {path}: {source}")]
+    Io {
+        path: String,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("failed to parse config file: {0}")]
+    Parse(#[from] toml::de::Error),
 }
 
 fn parse_header_list(raw: &str) -> Vec<(String, String)> {
@@ -187,5 +365,66 @@ mod tests {
         let e = AnthropicError::api_error("upstream connect timeout");
         assert!(!e.error.message.contains("capability_rejected:"));
         assert!(e.error.message.starts_with("gedoku-proxy: "));
+    }
+
+    #[test]
+    fn toml_config_overrides_only_specified_fields() {
+        let raw = r#"
+            listen_addr = "0.0.0.0:9000"
+            mode = "observe"
+            realm_strategy = "global"
+        "#;
+        let cfg = Config::from_toml_str(raw).expect("valid toml");
+        assert_eq!(cfg.listen_addr, "0.0.0.0:9000");
+        assert_eq!(cfg.mode, Mode::Observe);
+        assert_eq!(cfg.realm_strategy, RealmStrategy::Global);
+        // 未指定フィールドは既定値のまま。
+        assert_eq!(cfg.upstream_base_url, "https://api.anthropic.com");
+        assert_eq!(cfg.auth_mode, AuthMode::Passthrough);
+    }
+
+    #[test]
+    fn toml_config_rejects_unknown_keys() {
+        let raw = r#"typo_field = "oops""#;
+        let err = Config::from_toml_str(raw).expect_err("must reject unknown key");
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn toml_config_rejects_type_mismatch() {
+        let raw = r#"max_request_bytes = "not-a-number""#;
+        let err = Config::from_toml_str(raw).expect_err("must reject type mismatch");
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn toml_config_parses_extra_upstream_headers_table() {
+        let raw = r#"
+            [[extra_upstream_headers]]
+            name = "x-org-route"
+            value = "team-a"
+        "#;
+        let cfg = Config::from_toml_str(raw).expect("valid toml");
+        assert_eq!(
+            cfg.extra_upstream_headers,
+            vec![("x-org-route".to_string(), "team-a".to_string())]
+        );
+    }
+
+    #[test]
+    fn from_toml_file_reports_io_error_for_missing_file() {
+        let err = Config::from_toml_file("does/not/exist.toml").expect_err("missing file");
+        assert!(matches!(err, ConfigError::Io { .. }));
+    }
+
+    /// `configs/gedoku.example.toml` (計画 P5-T1) が常にパース可能であることを保証し、
+    /// ドキュメントと実装の乖離を検出する。
+    #[test]
+    fn example_config_file_parses_successfully() {
+        let raw = include_str!("../../../configs/gedoku.example.toml");
+        let cfg = Config::from_toml_str(raw).expect("example config must be valid");
+        assert_eq!(cfg.listen_addr, "0.0.0.0:18787");
+        assert_eq!(cfg.realm_strategy, RealmStrategy::Credential);
+        assert_eq!(cfg.mode, Mode::Enforce);
     }
 }

@@ -3,7 +3,7 @@
 //! P0 の範囲では検出・置換を一切行わない。リクエスト／レスポンスのボディは
 //! ストリームのまま素通しし、ヘッダーはオープンリスト方針 (§4.1) に従う。
 
-use crate::redact::{realm_from_headers, Redactor};
+use crate::redact::{derive_realm, Redactor};
 use axum::body::Body;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
@@ -179,7 +179,7 @@ pub async fn proxy_request(state: &AppState, req: axum::extract::Request) -> Res
 /// P0 のストリーミング転送 (`proxy_request`) とは別経路にする (`/v1/messages` 専用)。
 pub async fn redacted_messages_proxy(state: &AppState, req: axum::extract::Request) -> Response {
     let (parts, body) = req.into_parts();
-    let realm = realm_from_headers(&parts.headers);
+    let realm = derive_realm(&parts.headers, state.config.realm_strategy);
 
     let original_bytes = match axum::body::to_bytes(body, usize::MAX).await {
         Ok(b) => b,
@@ -204,7 +204,7 @@ pub async fn redacted_messages_proxy(state: &AppState, req: axum::extract::Reque
     } else {
         match state
             .redactor
-            .redact_body(&original_bytes, &realm, parts.uri.path())
+            .apply(&original_bytes, &realm, parts.uri.path(), state.config.mode)
         {
             Ok(redacted) => redacted,
             Err(err) => {

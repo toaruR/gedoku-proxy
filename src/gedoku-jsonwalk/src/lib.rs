@@ -4,11 +4,15 @@
 //! 「無検閲のままスキャン対象リーフを漏れなく列挙する」ことのみを担う。
 
 pub mod fieldmap;
+pub mod pathspec;
 pub mod pointer;
 pub mod value;
 
 pub use fieldmap::{
     collect_scan_targets, BlockRule, FieldPolicy, FieldRule, FieldShape, ScanTarget,
     StaticBlockRule, BLOCK_RULES,
+};
+pub use pathspec::{
+    resolve_top_level_policy, PathSpec, TopLevelPolicy, TopLevelRule, TOP_LEVEL_RULES,
 };
 pub use value::{parse, to_bytes, JsonWalkError};

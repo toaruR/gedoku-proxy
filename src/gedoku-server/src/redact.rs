@@ -1,14 +1,17 @@
-//! リクエストボディへの検出/置換ワイヤリング (設計 §7.9, 計画 P2-T7)。
+//! リクエストボディへの検出/置換ワイヤリング (設計 §7.9, 計画 P2-T7, P5-T6)。
 
 use gedoku_audit::{LogGuard, RedactionRecord, RestorationRecord};
-use gedoku_core::RealmId;
+use gedoku_core::{Mode, RealmId, RealmStrategy};
 use gedoku_detect::{Detection, DetectionEngine};
 use gedoku_jsonwalk::JsonWalkError;
 use gedoku_mapstore::{
     MappingStore, MappingStoreConfig, MemoryMappingStore, Placeholder, PlaceholderId, SecretString,
 };
 use sha2::{Digest, Sha256};
+use std::collections::hash_map::RandomState;
 use std::collections::BTreeMap;
+use std::hash::{BuildHasher, Hasher};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// `MappingStore::resolve` は `Placeholder::id` のみをキーに引く (`category` は
 /// HMAC 計算にしか使わない、計画 P3)。復元時はカテゴリ情報を持たないため固定値を渡す。
@@ -88,6 +91,53 @@ impl Redactor {
         Ok(out)
     }
 
+    /// `mode` に応じて `redact_body` (enforce, 置換適用) か観測のみ (observe, 本文非改変) を
+    /// 選択する (計画 P5-T6, GAP-7 の土台)。observe では検出イベントは監査ログに出るが、
+    /// プレースホルダーは生成せず本文は入力バイト列のまま返す。
+    pub fn apply(
+        &self,
+        body: &[u8],
+        realm: &RealmId,
+        path: &str,
+        mode: gedoku_core::Mode,
+    ) -> Result<Vec<u8>, JsonWalkError> {
+        match mode {
+            Mode::Enforce => self.redact_body(body, realm, path),
+            Mode::Observe => {
+                self.observe_only(body, realm, path)?;
+                Ok(body.to_vec())
+            }
+        }
+    }
+
+    /// observe モード本体: 検出はするが置換は一切行わない。
+    fn observe_only(&self, body: &[u8], realm: &RealmId, path: &str) -> Result<(), JsonWalkError> {
+        let value = gedoku_jsonwalk::parse(body)?;
+        let mut counts: BTreeMap<&'static str, u64> = BTreeMap::new();
+        let mut unique_values: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for target in gedoku_jsonwalk::collect_scan_targets(&value) {
+            let Some(text) = value.pointer(&target.pointer).and_then(|v| v.as_str()) else {
+                continue;
+            };
+            for d in self.engine.scan(text) {
+                *counts.entry(d.category).or_insert(0) += 1;
+                unique_values.insert(d.text(text).to_string());
+                self.log_guard.register_secret(d.text(text));
+            }
+        }
+        if !counts.is_empty() {
+            gedoku_audit::emit_redaction(&RedactionRecord {
+                realm_id: realm.as_str(),
+                path,
+                request_bytes_in: body.len(),
+                request_bytes_out: body.len(),
+                counts,
+                unique_values: unique_values.len(),
+            });
+        }
+        Ok(())
+    }
+
     /// §12.2 の `restoration` 監査イベントを発行する (計画 P3 のストリーム復元と連携)。
     pub fn emit_restoration_event(
         &self,
@@ -138,11 +188,19 @@ impl Redactor {
     }
 }
 
-/// Realm 導出 (暫定実装)。クライアント資格情報 (`x-api-key` / `Authorization`) を
-/// ハッシュ化し Realm 単位に分離することで、「同一クライアントは同一 Realm」という
-/// 最小限の分離のみを提供する。session/credential/global/ephemeral の正式な
-/// 戦略選択 (設計 §10.4) は P5-T2 で実装する。
-pub fn realm_from_headers(headers: &http::HeaderMap) -> RealmId {
+/// Realm 導出 (設計 §10.4, 計画 P5-T2)。`RealmStrategy` により切り替える:
+/// - `Credential` (既定, OQ-2): クライアント資格情報のハッシュを Realm とする。
+/// - `Global`: 全リクエストを単一 Realm に集約する。
+/// - `Ephemeral`: 呼び出し毎に新規 Realm を発行し、マッピングを一切再利用しない。
+pub fn derive_realm(headers: &http::HeaderMap, strategy: RealmStrategy) -> RealmId {
+    match strategy {
+        RealmStrategy::Credential => realm_from_credential_headers(headers),
+        RealmStrategy::Global => RealmId::new("global"),
+        RealmStrategy::Ephemeral => ephemeral_realm(),
+    }
+}
+
+fn realm_from_credential_headers(headers: &http::HeaderMap) -> RealmId {
     let cred = headers
         .get("x-api-key")
         .or_else(|| headers.get("authorization"))
@@ -151,6 +209,18 @@ pub fn realm_from_headers(headers: &http::HeaderMap) -> RealmId {
         Some(v) => RealmId::new(format!("cred:{}", hex_digest(v.as_bytes()))),
         None => RealmId::new("anonymous"),
     }
+}
+
+static EPHEMERAL_REALM_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// 呼び出し毎に一意な Realm を発行する。秘匿性ではなく「絶対に再利用しない」ことのみが
+/// 要件のため、プロセス内カウンタ + プロセス固有の乱数シードを混ぜるだけで十分。
+fn ephemeral_realm() -> RealmId {
+    let n = EPHEMERAL_REALM_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut hasher = RandomState::new().build_hasher();
+    hasher.write_u64(n);
+    hasher.write_u32(std::process::id());
+    RealmId::new(format!("ephemeral:{:016x}", hasher.finish()))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {
@@ -259,17 +329,76 @@ mod tests {
     }
 
     #[test]
-    fn realm_from_headers_separates_different_credentials() {
+    fn credential_strategy_separates_different_credentials() {
         let mut h1 = http::HeaderMap::new();
         h1.insert("x-api-key", "key-a".parse().unwrap());
         let mut h2 = http::HeaderMap::new();
         h2.insert("x-api-key", "key-b".parse().unwrap());
-        assert_ne!(realm_from_headers(&h1), realm_from_headers(&h2));
+        assert_ne!(
+            derive_realm(&h1, RealmStrategy::Credential),
+            derive_realm(&h2, RealmStrategy::Credential)
+        );
     }
 
     #[test]
-    fn realm_from_headers_falls_back_to_anonymous_without_credentials() {
+    fn credential_strategy_falls_back_to_anonymous_without_credentials() {
         let h = http::HeaderMap::new();
-        assert_eq!(realm_from_headers(&h), RealmId::new("anonymous"));
+        assert_eq!(
+            derive_realm(&h, RealmStrategy::Credential),
+            RealmId::new("anonymous")
+        );
+    }
+
+    #[test]
+    fn global_strategy_ignores_credentials() {
+        let mut h1 = http::HeaderMap::new();
+        h1.insert("x-api-key", "key-a".parse().unwrap());
+        let mut h2 = http::HeaderMap::new();
+        h2.insert("x-api-key", "key-b".parse().unwrap());
+        assert_eq!(
+            derive_realm(&h1, RealmStrategy::Global),
+            derive_realm(&h2, RealmStrategy::Global)
+        );
+    }
+
+    #[test]
+    fn ephemeral_strategy_never_repeats_even_for_same_headers() {
+        let mut h = http::HeaderMap::new();
+        h.insert("x-api-key", "key-a".parse().unwrap());
+        assert_ne!(
+            derive_realm(&h, RealmStrategy::Ephemeral),
+            derive_realm(&h, RealmStrategy::Ephemeral)
+        );
+    }
+
+    #[test]
+    fn observe_mode_detects_but_returns_body_byte_identical() {
+        let redactor = Redactor::new();
+        let body = json!({
+            "messages": [{"role": "user", "content": "my key is sk-ant-abcdefghijklmnopqrstuvwx"}]
+        });
+        let input = serde_json::to_vec(&body).unwrap();
+        let out = redactor
+            .apply(&input, &realm(), "/v1/messages", gedoku_core::Mode::Observe)
+            .unwrap();
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn enforce_mode_substitutes_like_redact_body() {
+        let redactor = Redactor::new();
+        let body = json!({
+            "messages": [{"role": "user", "content": "my key is sk-ant-abcdefghijklmnopqrstuvwx"}]
+        });
+        let input = serde_json::to_vec(&body).unwrap();
+        let out = redactor
+            .apply(&input, &realm(), "/v1/messages", gedoku_core::Mode::Enforce)
+            .unwrap();
+        assert_ne!(out, input);
+        let out: serde_json::Value = serde_json::from_slice(&out).unwrap();
+        assert!(out["messages"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("\u{27E6}GDK:"));
     }
 }

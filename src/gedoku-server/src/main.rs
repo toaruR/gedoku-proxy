@@ -14,7 +14,9 @@ async fn main() {
         .with_writer(log_guard.clone())
         .init();
 
-    let config = Arc::new(Config::from_env());
+    // 設計 §18 / 計画 P5-T1: `GEDOKU_CONFIG_FILE` が指すTOMLがあればそれを、
+    // なければ環境変数から読み込む。不正な設定ファイルは起動を失敗させる。
+    let config = Arc::new(Config::load());
     let listen_addr = config.listen_addr.clone();
     let upstream = config.upstream_base_url.clone();
 

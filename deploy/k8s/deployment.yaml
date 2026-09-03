@@ -1,0 +1,61 @@
+# 計画 P5-T4: Kubernetes 向けマニフェスト。
+# readiness/liveness probe は /health (P0-T1) を叩く。
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gedoku-proxy
+  labels:
+    app: gedoku-proxy
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: gedoku-proxy
+  template:
+    metadata:
+      labels:
+        app: gedoku-proxy
+    spec:
+      containers:
+        - name: gedoku-proxy
+          image: gedoku-proxy:latest
+          ports:
+            - name: http
+              containerPort: 18787
+          env:
+            # コンテナ内では 127.0.0.1 既定値では probe が届かないため上書きする。
+            - name: GEDOKU_LISTEN_ADDR
+              value: "0.0.0.0:18787"
+            - name: GEDOKU_UPSTREAM_BASE_URL
+              value: "https://api.anthropic.com"
+            # OQ-3: 既定 off (本番影響ゼロを優先)。段階ロールアウト (計画§13.2) は
+            # まず observe に上書きしてから enforce へ切り替える運用を想定。
+            - name: GEDOKU_MODE
+              value: "enforce"
+          # RISK-4: mlock (M3, gedoku-mapstore::harden) を機能させる最小 capability。
+          # 付与できないクラスタでは harden.rs が best-effort no-op に留まり、
+          # zeroize のみで動作を続ける (フォールバック、観測ログで警告)。
+          securityContext:
+            capabilities:
+              add: ["IPC_LOCK"]
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "1"
+              memory: "512Mi"

@@ -1,0 +1,30 @@
+# gedoku-proxy 設定ファイル例 (計画 P5-T1)。
+# `GEDOKU_CONFIG_FILE=/path/to/this.toml` で読み込む。
+# 未知キー・型不一致がある場合、起動時にエラーメッセージを出して失敗する。
+# 記載しないフィールドは環境変数版 (`Config::from_env`) と同じ既定値になる。
+
+listen_addr = "0.0.0.0:18787"
+upstream_base_url = "https://api.anthropic.com"
+
+# "passthrough" (既定) | "replace" | "augment"
+auth_mode = "passthrough"
+# upstream_auth_token = "..."
+# upstream_api_key = "..."
+
+upstream_accept_encoding = "identity"
+max_request_bytes = 33554432
+models_passthrough = false
+upstream_connect_timeout_secs = 30
+
+# "fail_closed" (既定) | "fail_open" — ADR-9: サイズ超過は本設定によらず常に fail-open。
+on_detect_error = "fail_closed"
+
+# Realm 導出戦略 (§10.4, OQ-2): "credential" (既定) | "global" | "ephemeral"
+realm_strategy = "credential"
+
+# 適用モード (§19, OQ-3): "enforce" (既定, 検出を置換) | "observe" (検出のみ、本文非改変)
+mode = "enforce"
+
+[[extra_upstream_headers]]
+name = "x-org-route"
+value = "team-a"

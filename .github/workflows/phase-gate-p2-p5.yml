@@ -1,0 +1,47 @@
+# 計画 §5 フェーズゲート運用ルール: P1完了ゲート (phase-gate-p0-p1.yml green) を
+# 通過した場合のみ実行する。`workflow_run` の conclusion 条件により、P1未通過時は
+# このワークフロー自体が機械的にスキップされる。
+name: phase-gate-p2-p5
+
+on:
+  workflow_run:
+    workflows: ["phase-gate-p0-p1"]
+    types: [completed]
+
+jobs:
+  p2-p5-gate:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Windows開発機ではページファイル不足 (os error 1455) が既知の踏みポイントの
+      # ためワークスペース全体を -j 1 で実行しているが、Linux runner では並列で問題ない。
+      - name: full workspace tests (P2-T8, P3-T9, P4-T7, P5-T9 相当)
+        run: cargo test --workspace
+
+      - name: P2 completion harness
+        run: cargo test -p gedoku-server --test p2_redaction
+
+      - name: P3 completion harness
+        run: cargo test -p gedoku-server --test p3_stream_restoration
+
+      - name: P4 completion harness (T-13 縮小版, ログ全量grepゼロ漏洩)
+        run: cargo test -p gedoku-server --test p4_audit_log
+
+      - name: P4-T4/T16 syscallレベル・ディスク非書き込み監査
+        run: |
+          echo "strace/eBPF によるディスク非書き込み監査 (T-16) は専用 runner 権限が前提のため"
+          echo "本ジョブでは未実施 (既知ギャップ、docs/plans/IMPLEMENTATION_PLAN.md §7.2(4)参照)。"
+
+      - name: clippy (P5-T8 の一部)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo-deny licenses (P5-T8, §12)
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check licenses

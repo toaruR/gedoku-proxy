@@ -1,0 +1,33 @@
+# 計画 §5 フェーズゲート運用ルール: P0/P1 は P2以降と別ワークフローで実行する。
+# このジョブが green になるまで phase-gate-p2-p5.yml は workflow_run 条件で
+# 機械的にスキップされる (人間の運用ではなくCI設定で強制)。
+name: phase-gate-p0-p1
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  p0-p1-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build workspace
+        run: cargo build --workspace
+
+      # P0-T9: 直結 vs gedoku経由の差分ゼロハーネス
+      - name: P0 completion harness
+        run: cargo test -p gedoku-server --test p0_transparent_proxy -- --test-threads=1
+
+      # P1-T6/T7: proptest C1-C7 + 無検閲HARリプレイ差分ゼロハーネス
+      - name: P1 completion harness
+        run: |
+          cargo test -p gedoku-jsonwalk --test proptest_c1_c7 -- --test-threads=1
+          cargo test -p gedoku-jsonwalk --test p1_completion_harness -- --test-threads=1
+
+      - name: P0/P1 crate unit tests
+        run: cargo test -p gedoku-core -p gedoku-jsonwalk --lib -- --test-threads=1

@@ -9,7 +9,7 @@
 //! 再現できる。
 
 use bytes::Bytes;
-use gedoku_core::{AuthMode, Config, UnknownPathPolicy};
+use gedoku_core::{AuthMode, Config, Mode, RealmStrategy, UnknownPathPolicy};
 use gedoku_mock_upstream::{MockUpstream, ResponseSpec};
 use http::StatusCode;
 use std::sync::Arc;
@@ -29,6 +29,8 @@ fn base_config(upstream_base_url: String) -> Config {
         unknown_path_policy: UnknownPathPolicy::Passthrough,
         upstream_connect_timeout: Duration::from_secs(5),
         on_detect_error_fail_open: false,
+        realm_strategy: RealmStrategy::Credential,
+        mode: Mode::Enforce,
     }
 }
 

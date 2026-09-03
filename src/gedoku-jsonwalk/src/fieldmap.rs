@@ -5,6 +5,7 @@
 //! 「スキャン対象リーフを漏れなく・禁止パスを一切含まずに列挙する」機構のみで、
 //! P2 の検出エンジンがこの列挙結果を消費する。
 
+use crate::pathspec::{resolve_top_level_policy, TopLevelPolicy, TOP_LEVEL_RULES};
 use crate::pointer::{push_index, push_key};
 use serde_json::Value;
 
@@ -242,24 +243,35 @@ pub struct ScanTarget {
 
 /// リクエスト/レスポンスボディ全体から、ScanAndSubstitute 対象のリーフを漏れなく列挙する。
 /// 禁止パス (§7.3) は列挙対象のロジック自体が walk しないため構造的に含まれない。
+///
+/// GAP-4 (計画 P5-T3): トップレベルフィールドの可否は `pathspec::TOP_LEVEL_RULES`
+/// (Exact JSON Pointer > 再帰glob `**` > 既定 AlwaysForward の優先順位) で判定する。
+/// `system`/`messages` のみがブロック type-tag ウォーカーへ委譲され、その内部の
+/// 可否判定は本モジュール冒頭の `BLOCK_RULES` が唯一の権威 (pathspec からは不可侵)。
 pub fn collect_scan_targets(body: &Value) -> Vec<ScanTarget> {
     let mut out = Vec::new();
     let Some(obj) = body.as_object() else {
         return out;
     };
 
-    if let Some(system) = obj.get("system") {
-        walk_system(system, &mut out);
-    }
-    if let Some(messages) = obj.get("messages").and_then(Value::as_array) {
-        for (i, msg) in messages.iter().enumerate() {
-            walk_message(msg, &push_index("/messages", i), &mut out);
+    for (key, val) in obj.iter() {
+        let pointer = push_key("", key);
+        match resolve_top_level_policy(TOP_LEVEL_RULES, &pointer) {
+            TopLevelPolicy::RecurseSystemBlocks => walk_system(val, &mut out),
+            TopLevelPolicy::RecurseMessages => {
+                if let Some(items) = val.as_array() {
+                    for (i, msg) in items.iter().enumerate() {
+                        walk_message(msg, &push_index("/messages", i), &mut out);
+                    }
+                }
+            }
+            // AlwaysForward / ForbidTouch / HashOnly: 触れない。
+            // 「触れない」ことがそのまま到達不能性の保証になる (§7.3 禁止リスト)。
+            TopLevelPolicy::AlwaysForward
+            | TopLevelPolicy::ForbidTouch
+            | TopLevelPolicy::HashOnly => {}
         }
     }
-    // /model, /tools/{i}/name, /tools/{i}/input_schema/**, /stop_sequences/**,
-    // /cache_control/**, /thinking/**, /output_config/**, /context_management/**,
-    // /betas/**, /metadata/user_id (HashOnly) は意図的に walk しない。
-    // 「触れない」ことがそのまま到達不能性の保証になる (§7.3 禁止リスト)。
 
     out
 }
