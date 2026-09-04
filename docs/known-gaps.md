@@ -31,8 +31,13 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
 
 ## P2(検出/置換)
 
-- **P2-T6**: プロセスのコアダンプを強制生成し `strings` で平文0件を確認するテストは
-  未実装(mlock/zeroize自体の実装は完了、検証テストのみ未着手)。
+- **P2-T6**: ~~プロセスのコアダンプを強制生成し `strings` で平文0件を確認するテストは
+  未実装~~ → **2026-09-04 解消**。WSL2(Linux)環境で `src/gedoku-mapstore/tests/p2_t6_coredump.rs`
+  として実装済み(`#[ignore]`、Linux+`core_pattern`設定済み環境限定で実行)。`fork()`した子プロセスで
+  秘密値をstore/resolve後にdropしてから`SIGABRT`で強制コアダンプさせ、`strings`で平文0件を確認しgreen。
+  この検証過程で `harden_process_best_effort()`(RLIMIT_CORE=0)が `gedoku-server/src/main.rs` から
+  一度も呼ばれていない実装漏れも発見し、`main()`冒頭で呼び出すよう修正済み(詳細は`CLAUDE.md`の
+  ハマりポイント参照)。
 - **P2-T8**: 合成秘密コーパス300件+非秘密コーパス300件でのF1/誤検出率CIレポートは
   未実装。代表4カテゴリ(SECRET/PII_EMAIL/AWS-key/PII_CARD)の小規模コーパステストのみ
   `p2_redaction.rs` に実装。
@@ -54,8 +59,13 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
 
 ## P4(監査ログ)
 
-- **P4-T4/T16**: strace/eBPFによるディスク非書き込み監査は、Windows開発機では
-  strace/bpftraceが使えないため未着手。Linux CI runnerでの実施が前提。
+- **P4-T4/T16**: ~~strace/eBPFによるディスク非書き込み監査は、Windows開発機では
+  strace/bpftraceが使えないため未着手~~ → **2026-09-04 解消(strace系のみ)**。WSL2に
+  `strace`/`gdb`を導入し、`src/gedoku-server/tests/p4_t4_strace_disk_audit.rs`として実装済み。
+  自プロセスを`strace -f -e trace=openat,open,write,pwrite64,writev`配下で再実行し、合成秘密
+  コーパスを`Redactor::redact_body`経由で処理させた上でトレース全体をgrep、原文0件をgreenで確認。
+  `strace`不在環境では自動スキップするフォールバック付き。eBPF(`bpftrace`)版は権限制約下CI向けの
+  代替経路として計画§7.2に記載があるが、strace版で目的を達成できたため未着手のまま。
 - **P4-T6**: `SecretString` が `Debug`/`Display` 非実装のため型システム上の漏洩防止は
   効いているが、「意図的にpanicを起こして原文が含まれないことを確認する」明示的なテスト
   (trybuild等でのコンパイル不可証明含む)は未実装。
@@ -67,10 +77,13 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
 
 ## P5(設定/デプロイ)
 
-- **muslスタティックビルド未検証**: `Dockerfile`(マルチステージ `rust:1-alpine` →
+- **muslスタティックビルド未検証**: ~~`Dockerfile`(マルチステージ `rust:1-alpine` →
   `scratch`)は作成済みだが、開発機のDocker Desktopが起動しておらず `docker build` を
-  実行できていない。Linux環境で `docker build` → `ldd` による動的リンク依存確認が
-  必要。
+  実行できていない~~ → **2026-09-04 解消**。WSL2内蔵の`docker` CLI/daemonで`docker build`実施、
+  `ldd`で`statically linked`(動的リンク依存ゼロ)を確認。`scratch`ベースのコンテナも実際に
+  起動し`/health`エンドポイントが200を返すことまで確認済み。ビルド時に`.dockerignore`が
+  無く`target/`がコンテキストに巻き込まれて失敗する問題があったため、`.dockerignore`を
+  新規追加して解消(詳細は`CLAUDE.md`のハマりポイント参照)。
 - **dylint未実施**: 計画のP5-T8は本来dylintカスタムlintも要求していたが、
   `cargo clippy --workspace --all-targets -- -D warnings` + `cargo-deny check licenses`
   にスコープダウンした。
@@ -78,10 +91,13 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
 
 ## 横断的な既知ギャップ
 
-- **strace/eBPF系検証(P4-T4/T16)**、**コアダンプ検証(P2-T6)**、**muslビルド検証
+- ~~**strace/eBPF系検証(P4-T4/T16)**、**コアダンプ検証(P2-T6)**、**muslビルド検証
   (P5-T5)** はすべて「Windows開発機では実施不可、Linux環境が前提」という同一理由で
-  先送りが繰り返されている。次にLinux CI runner(またはWSL)が使える状況になった時点で
-  まとめて解消するのが効率的。
+  先送りが繰り返されている~~ → **2026-09-04 解消**。3件ともWSL2(Ubuntu-24.04)環境で
+  まとめて実施しすべてgreen(strace/gdbは`apt-get install`で追加導入)。
+  `.github/workflows/phase-gate-p2-p5.yml`にも3件とも組み込み済み(strace/gdb導入・
+  core_pattern設定・P2-T6/P4-T4-T16テスト実行・musl build+`ldd`/`file`検証の各ステップを追加)。
+  CI実行での実際の green は次回のワークフロー実行で確認が必要(ローカルWSLでは確認済み)。
 - **実HARベースの検証(P1-T7)**と**300件コーパスのF1レポート(P2-T8)**は、素材
   (実セッションのHARキャプチャ、大規模秘密コーパス)がリポジトリに存在しないことが
   理由。これは環境ではなく素材の問題なので、必要になった時点で素材を用意すれば解消できる。

@@ -33,10 +33,17 @@ jobs:
       - name: P4 completion harness (T-13 縮小版, ログ全量grepゼロ漏洩)
         run: cargo test -p gedoku-server --test p4_audit_log
 
+      - name: install strace/gdb (P2-T6, P4-T4/T16)
+        run: sudo apt-get update -qq && sudo apt-get install -y strace gdb
+
+      - name: enable plain core_pattern (P2-T6)
+        run: echo "/tmp/core.%e.%p" | sudo tee /proc/sys/kernel/core_pattern
+
+      - name: P2-T6 コアダンプ強制生成+strings平文0件検証
+        run: cargo test -p gedoku-mapstore --test p2_t6_coredump -- --ignored
+
       - name: P4-T4/T16 syscallレベル・ディスク非書き込み監査
-        run: |
-          echo "strace/eBPF によるディスク非書き込み監査 (T-16) は専用 runner 権限が前提のため"
-          echo "本ジョブでは未実施 (既知ギャップ、docs/plans/IMPLEMENTATION_PLAN.md §7.2(4)参照)。"
+        run: cargo test -p gedoku-server --test p4_t4_strace_disk_audit
 
       - name: clippy (P5-T8 の一部)
         run: cargo clippy --workspace --all-targets -- -D warnings
@@ -45,3 +52,13 @@ jobs:
         run: |
           cargo install cargo-deny --locked
           cargo deny check licenses
+
+      - name: P5-T5 musl静的リンク検証 (ldd依存ゼロ確認)
+        run: |
+          docker build -t gedoku-proxy:musl-verify .
+          docker create --name gedoku-verify gedoku-proxy:musl-verify
+          docker cp gedoku-verify:/gedoku-proxy /tmp/gedoku-proxy-musl
+          docker rm gedoku-verify
+          file /tmp/gedoku-proxy-musl | tee /tmp/file-output.txt
+          ldd /tmp/gedoku-proxy-musl || true
+          grep -q "statically linked" /tmp/file-output.txt
