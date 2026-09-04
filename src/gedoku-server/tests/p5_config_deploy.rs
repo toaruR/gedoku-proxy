@@ -24,6 +24,7 @@ fn base_config(upstream_base_url: String, realm_strategy: RealmStrategy, mode: M
         on_detect_error_fail_open: false,
         realm_strategy,
         mode,
+        debug_dump_replacements: false,
     }
 }
 

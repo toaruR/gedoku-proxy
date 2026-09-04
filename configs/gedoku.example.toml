@@ -25,6 +25,11 @@ realm_strategy = "credential"
 # 適用モード (§19, OQ-3): "enforce" (既定, 検出を置換) | "observe" (検出のみ、本文非改変)
 mode = "enforce"
 
+# デバッグ用: 置換発生時にカテゴリ・プレースホルダー・前後数語(原文は含まない)を
+# 固定パス "gedoku-replacements-debug.log" (プロセスのカレントディレクトリ) へ追記する。
+# 既定 off。有効化すると起動時に警告ログを出す。
+debug_dump_replacements = false
+
 [[extra_upstream_headers]]
 name = "x-org-route"
 value = "team-a"

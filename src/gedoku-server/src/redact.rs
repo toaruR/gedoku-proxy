@@ -10,17 +10,29 @@ use gedoku_mapstore::{
 use sha2::{Digest, Sha256};
 use std::collections::hash_map::RandomState;
 use std::collections::BTreeMap;
+use std::fs::{File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
+use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 
 /// `MappingStore::resolve` は `Placeholder::id` のみをキーに引く (`category` は
 /// HMAC 計算にしか使わない、計画 P3)。復元時はカテゴリ情報を持たないため固定値を渡す。
 const RESTORE_LOOKUP_CATEGORY: &str = "RESTORE_LOOKUP";
 
+/// デバッグダンプの出力先固定パス (設定でON/OFFのみ切り替える、パス変更は不可)。
+const DEBUG_DUMP_PATH: &str = "gedoku-replacements-debug.log";
+
+/// デバッグダンプに含める前後文脈の語数。
+const DEBUG_DUMP_CONTEXT_WORDS: usize = 5;
+
 pub struct Redactor {
     engine: DetectionEngine,
     store: MemoryMappingStore,
     log_guard: LogGuard,
+    /// 有効時のみ `Some`。原文は書き込まず、カテゴリ・プレースホルダー・前後数語のみ
+    /// `DEBUG_DUMP_PATH` へ追記する (設計 §10.3 M8 の趣旨に倣い既定 off・原文非含有)。
+    debug_dump: Option<Mutex<File>>,
 }
 
 impl Default for Redactor {
@@ -38,10 +50,25 @@ impl Redactor {
     /// `main.rs` は同じ `LogGuard` を `tracing_subscriber` の writer にも渡すため、
     /// このコンストラクタで受け取ったインスタンスをそのまま保持する。
     pub fn with_log_guard(log_guard: LogGuard) -> Self {
+        Self::with_log_guard_and_debug_dump(log_guard, false)
+    }
+
+    /// `debug_dump_replacements` 設定 (既定 off) を反映したコンストラクタ。
+    pub fn with_log_guard_and_debug_dump(
+        log_guard: LogGuard,
+        debug_dump_replacements: bool,
+    ) -> Self {
+        if debug_dump_replacements {
+            tracing::warn!(
+                path = DEBUG_DUMP_PATH,
+                "gedoku-proxy: debug_dump_replacements is ON — placeholder/category/context (not original secrets) will be written to disk"
+            );
+        }
         Redactor {
             engine: DetectionEngine::default(),
             store: MemoryMappingStore::new(MappingStoreConfig::default()),
             log_guard,
+            debug_dump: debug_dump_replacements.then(open_debug_dump_file),
         }
     }
 
@@ -180,12 +207,58 @@ impl Redactor {
                 d.category,
                 SecretString::new(d.text(text).to_string()),
             );
-            out.push_str(&placeholder.format(false));
+            let formatted = placeholder.format(false);
+            if let Some(dump) = &self.debug_dump {
+                write_debug_dump_line(
+                    dump,
+                    d.category,
+                    &text[cursor..d.start],
+                    &formatted,
+                    &text[d.end..],
+                );
+            }
+            out.push_str(&formatted);
             cursor = d.end;
         }
         out.push_str(&text[cursor..]);
         out
     }
+}
+
+fn open_debug_dump_file() -> Mutex<File> {
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(DEBUG_DUMP_PATH)
+        .unwrap_or_else(|e| {
+            panic!("gedoku-proxy: failed to open debug dump file {DEBUG_DUMP_PATH}: {e}")
+        });
+    Mutex::new(file)
+}
+
+/// 原文は書かず、カテゴリ・プレースホルダー・前後数語の文脈のみを1置換1行で追記する。
+fn write_debug_dump_line(
+    file: &Mutex<File>,
+    category: &str,
+    before: &str,
+    placeholder: &str,
+    after: &str,
+) {
+    let before_ctx = last_n_words(before, DEBUG_DUMP_CONTEXT_WORDS).replace('\n', " ");
+    let after_ctx = first_n_words(after, DEBUG_DUMP_CONTEXT_WORDS).replace('\n', " ");
+    let line = format!("category={category}\tcontext=\"{before_ctx} {placeholder} {after_ctx}\"");
+    if let Ok(mut f) = file.lock() {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn last_n_words(s: &str, n: usize) -> String {
+    let words: Vec<&str> = s.split_whitespace().collect();
+    words[words.len().saturating_sub(n)..].join(" ")
+}
+
+fn first_n_words(s: &str, n: usize) -> String {
+    s.split_whitespace().take(n).collect::<Vec<_>>().join(" ")
 }
 
 /// Realm 導出 (設計 §10.4, 計画 P5-T2)。`RealmStrategy` により切り替える:
@@ -400,5 +473,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("\u{27E6}GDK:"));
+    }
+
+    #[test]
+    fn debug_dump_writes_category_and_context_but_never_the_raw_secret() {
+        let _ = std::fs::remove_file(DEBUG_DUMP_PATH);
+        let redactor = Redactor::with_log_guard_and_debug_dump(LogGuard::stdout(), true);
+        let secret = "sk-ant-abcdefghijklmnopqrstuvwx";
+        let body = json!({
+            "messages": [{"role": "user", "content": format!("please rotate my key {secret} today")}]
+        });
+        redactor
+            .redact_body(
+                &serde_json::to_vec(&body).unwrap(),
+                &realm(),
+                "/v1/messages",
+            )
+            .unwrap();
+
+        let dumped = std::fs::read_to_string(DEBUG_DUMP_PATH).unwrap();
+        let _ = std::fs::remove_file(DEBUG_DUMP_PATH);
+
+        assert!(!dumped.contains(secret), "raw secret must never be dumped");
+        assert!(dumped.contains("category=SECRET"));
+        assert!(dumped.contains("\u{27E6}GDK:SECRET:"));
+        assert!(dumped.contains("please rotate my key"));
+        assert!(dumped.contains("today"));
     }
 }

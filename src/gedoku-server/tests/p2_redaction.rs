@@ -24,6 +24,7 @@ fn base_config(upstream_base_url: String) -> Config {
         on_detect_error_fail_open: false,
         realm_strategy: RealmStrategy::Credential,
         mode: Mode::Enforce,
+        debug_dump_replacements: false,
     }
 }
 

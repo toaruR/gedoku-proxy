@@ -59,7 +59,10 @@ pub fn build_router(config: Arc<Config>) -> Router {
 /// (設計 §12.4、計画 P4-T2)。
 pub fn build_router_with_guard(config: Arc<Config>, log_guard: LogGuard) -> Router {
     let client = build_client(&config);
-    let redactor = Arc::new(Redactor::with_log_guard(log_guard));
+    let redactor = Arc::new(Redactor::with_log_guard_and_debug_dump(
+        log_guard,
+        config.debug_dump_replacements,
+    ));
     let state = AppState {
         config,
         client,
@@ -74,7 +77,10 @@ async fn messages(State(state): State<AppState>, req: axum::extract::Request) ->
 }
 
 pub fn build_router_with_client(config: Arc<Config>, client: reqwest::Client) -> Router {
-    let redactor = Arc::new(Redactor::new());
+    let redactor = Arc::new(Redactor::with_log_guard_and_debug_dump(
+        LogGuard::stdout(),
+        config.debug_dump_replacements,
+    ));
     let state = AppState {
         config,
         client,

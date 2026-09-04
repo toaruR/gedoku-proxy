@@ -22,3 +22,6 @@ docs/knowledge-kit-usage.md
 
 # 実HARキャプチャの生データ(未スクラビング、秘密情報を含みうる)
 docs/fixtures/har-raw/
+
+# debug_dump_replacements 有効時の固定パス出力先(原文は含まないが誤コミット防止)
+gedoku-replacements-debug.log

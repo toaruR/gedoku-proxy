@@ -107,6 +107,9 @@ pub struct Config {
     pub realm_strategy: RealmStrategy,
     /// 検出/置換の適用モード (計画 P5-T6)。
     pub mode: Mode,
+    /// デバッグ用途: 置換したプレースホルダー(原文は含まない)とカテゴリ、
+    /// 前後数語の文脈を固定パスのテキストファイルへ追記する (既定 off)。
+    pub debug_dump_replacements: bool,
 }
 
 impl Config {
@@ -152,6 +155,9 @@ impl Config {
             mode: env::var("GEDOKU_MODE")
                 .map(|s| Mode::from_str_lenient(&s))
                 .unwrap_or(Mode::Enforce),
+            debug_dump_replacements: env::var("GEDOKU_DEBUG_DUMP_REPLACEMENTS")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false),
         }
     }
 
@@ -203,6 +209,9 @@ impl Config {
                 .as_deref()
                 .map(Mode::from_str_lenient)
                 .unwrap_or(defaults.mode),
+            debug_dump_replacements: file
+                .debug_dump_replacements
+                .unwrap_or(defaults.debug_dump_replacements),
         })
     }
 
@@ -243,6 +252,7 @@ impl Config {
             on_detect_error_fail_open: false,
             realm_strategy: RealmStrategy::Credential,
             mode: Mode::Enforce,
+            debug_dump_replacements: false,
         }
     }
 }
@@ -264,6 +274,7 @@ struct FileConfig {
     on_detect_error: Option<String>,
     realm_strategy: Option<String>,
     mode: Option<String>,
+    debug_dump_replacements: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
