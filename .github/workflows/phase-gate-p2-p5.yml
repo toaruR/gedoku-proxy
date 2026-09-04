@@ -59,6 +59,10 @@ jobs:
           docker create --name gedoku-verify gedoku-proxy:musl-verify
           docker cp gedoku-verify:/gedoku-proxy /tmp/gedoku-proxy-musl
           docker rm gedoku-verify
-          file /tmp/gedoku-proxy-musl | tee /tmp/file-output.txt
-          ldd /tmp/gedoku-proxy-musl || true
-          grep -q "statically linked" /tmp/file-output.txt
+          file /tmp/gedoku-proxy-musl
+          ldd /tmp/gedoku-proxy-musl > /tmp/ldd-output.txt 2>&1 || true
+          cat /tmp/ldd-output.txt
+          # 静的リンクバイナリの ldd は "statically linked"/"not a dynamic executable" 等
+          # 文言がバージョン依存なので、実際の動的ライブラリ解決行 (`foo.so => /path`) が
+          # 1件も無いことで判定する。
+          ! grep -q " => " /tmp/ldd-output.txt
