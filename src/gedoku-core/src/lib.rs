@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use std::env;
 use std::time::Duration;
 
+/// `--config`/`GEDOKU_CONFIG_FILE` 未指定時に自動で読みに行く既定の設定ファイルパス。
+const DEFAULT_CONFIG_PATH: &str = "configs/gedoku.toml";
+
 /// アップストリームへの資格情報転送モード (設計 §5.2)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuthMode {
@@ -224,14 +227,43 @@ impl Config {
         Config::from_toml_str(&raw)
     }
 
-    /// `GEDOKU_CONFIG_FILE` が設定されていればそのファイルから、なければ環境変数から
-    /// 設定を読み込む (計画 P5-T1)。不正な設定ファイルは起動を失敗させる (`panic`)。
+    /// 設定ファイルの解決順は
+    /// `--config`/`-c` 起動引数 > `GEDOKU_CONFIG_FILE` 環境変数 >
+    /// 既定パス `configs/gedoku.toml` (存在すれば) > 環境変数群 (計画 P5-T1)。
+    /// 不正な設定ファイルは起動を失敗させる (`panic`)。
     pub fn load() -> Config {
-        match env::var("GEDOKU_CONFIG_FILE") {
-            Ok(path) => Config::from_toml_file(&path)
+        Self::load_from_args(env::args().skip(1))
+    }
+
+    /// [`Config::load`] の本体。CLI引数をテストから注入できるよう分離している。
+    pub fn load_from_args<I: IntoIterator<Item = String>>(args: I) -> Config {
+        let path = Self::config_path_from_args(args)
+            .or_else(|| env::var("GEDOKU_CONFIG_FILE").ok())
+            .or_else(|| {
+                let default = DEFAULT_CONFIG_PATH;
+                std::path::Path::new(default)
+                    .is_file()
+                    .then(|| default.to_string())
+            });
+        match path {
+            Some(path) => Config::from_toml_file(&path)
                 .unwrap_or_else(|e| panic!("gedoku-proxy: invalid config file: {e}")),
-            Err(_) => Config::from_env(),
+            None => Config::from_env(),
         }
+    }
+
+    /// `--config <path>` / `--config=<path>` / `-c <path>` を探す。
+    fn config_path_from_args<I: IntoIterator<Item = String>>(args: I) -> Option<String> {
+        let mut iter = args.into_iter();
+        while let Some(arg) = iter.next() {
+            if arg == "--config" || arg == "-c" {
+                return iter.next();
+            }
+            if let Some(value) = arg.strip_prefix("--config=") {
+                return Some(value.to_string());
+            }
+        }
+        None
     }
 
     /// `from_toml_str` が「ファイル未指定フィールドの既定値」として使う。環境変数は
@@ -437,5 +469,47 @@ mod tests {
         assert_eq!(cfg.listen_addr, "0.0.0.0:18787");
         assert_eq!(cfg.realm_strategy, RealmStrategy::Credential);
         assert_eq!(cfg.mode, Mode::Enforce);
+    }
+
+    #[test]
+    fn config_path_from_args_supports_space_and_equals_forms() {
+        fn args(v: &[&str]) -> Vec<String> {
+            v.iter().map(|s| s.to_string()).collect()
+        }
+        assert_eq!(
+            Config::config_path_from_args(args(&["--config", "foo.toml"])),
+            Some("foo.toml".to_string())
+        );
+        assert_eq!(
+            Config::config_path_from_args(args(&["--config=foo.toml"])),
+            Some("foo.toml".to_string())
+        );
+        assert_eq!(
+            Config::config_path_from_args(args(&["-c", "foo.toml"])),
+            Some("foo.toml".to_string())
+        );
+        assert_eq!(Config::config_path_from_args(args(&["--other"])), None);
+        assert_eq!(Config::config_path_from_args(args(&[])), None);
+    }
+
+    /// CLI引数で指定した設定ファイルが最優先で読まれる (環境変数/既定パスより優先)。
+    #[test]
+    fn load_from_args_prefers_cli_config_over_default() {
+        let dir = std::env::temp_dir().join(format!(
+            "gedoku-core-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cli.toml");
+        std::fs::write(&path, r#"listen_addr = "0.0.0.0:9999""#).unwrap();
+
+        let cfg = Config::load_from_args(vec![
+            "--config".to_string(),
+            path.to_str().unwrap().to_string(),
+        ]);
+        assert_eq!(cfg.listen_addr, "0.0.0.0:9999");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
