@@ -2,13 +2,15 @@
 
 [日本語](README.ja.md)
 
-A transparent proxy sitting between Claude Code (and other clients) and an Anthropic Messages API–compatible upstream, wired in via `ANTHROPIC_BASE_URL`. Written in Rust / axum.
+### Detoxify what you send your agent
+
+A transparent proxy that auto-redacts API keys and emails into type-aware placeholders before they reach the upstream, then restores them in the response. Just point `ANTHROPIC_BASE_URL` at it. Rust / axum.
 
 > See [docs/gedoku-proxy-design.md](docs/gedoku-proxy-design.md) for the detailed design and [docs/specification.md](docs/specification.md) for the spec.
 
 ## Status
 
-Currently **P0 (transparent proxy skeleton, no filtering) complete**. Requests/responses are streamed through as-is. JSON structure preservation, detection, and rewriting (the actual "detox" logic) are not yet implemented.
+**P0–P5 complete**: transparent proxy skeleton, structure-preserving JSON walking, PII/secret detection & substitution, streaming (SSE) restoration, audit logging, and config/deployment are all implemented and covered by CI. Known remaining gaps (Bedrock/Vertex AWS event-stream framing, a 290s keepalive soak test, dylint custom lints, and real K8s cluster validation) are tracked in [docs/known-gaps.md](docs/known-gaps.md).
 
 ## Layout
 

@@ -2,13 +2,15 @@
 
 [English](README.md)
 
-`ANTHROPIC_BASE_URL` 経由で Claude Code などのクライアントと Anthropic Messages API 互換アップストリームの間に立つ透過プロキシ。Rust / axum 製。
+### エージェントへの通信を解毒する
+
+APIキーやメールアドレスを型の分かるプレースホルダへ自動置換してからアップストリームへ送り、レスポンスで元に戻す透過プロキシ。`ANTHROPIC_BASE_URL` に差し込むだけ。Rust / axum 製。
 
 > 詳細設計は [docs/gedoku-proxy-design.md](docs/gedoku-proxy-design.md)、仕様は [docs/specification.md](docs/specification.md) を参照。
 
 ## ステータス
 
-現在 **P0（透過プロキシ骨格・無検閲）完了**。リクエスト/レスポンスをストリーミングでそのまま素通しする段階。JSON構造保存・検出・置換（毒抜き本体）は未実装。
+**P0〜P5 完了**: 透過プロキシ骨格、構造保存JSONウォーカー、PII/シークレット検出・置換、ストリーミング（SSE）復元、監査ログ、設定/デプロイをすべて実装済みでCIにも組み込み済み。残存する既知のギャップ（Bedrock/Vertex向けAWS event-streamフレーミング、290秒keepaliveソークテスト、dylintカスタムlint、K8s実クラスタ検証）は[docs/known-gaps.md](docs/known-gaps.md)を参照。
 
 ## 構成
 
