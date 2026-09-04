@@ -4,6 +4,7 @@
 //! Linux 専用。CI 側で以下を満たすこと:
 //! - `/proc/sys/kernel/core_pattern` が固定パス形式(`%p` を含む)であること
 //! - `strings` コマンドが利用可能であること
+//!
 //! 満たさない環境では known-gaps.md の通り実行不可のため `#[ignore]` する。
 
 #![cfg(all(unix, target_os = "linux"))]
@@ -14,10 +15,7 @@ use gedoku_mapstore::{MappingStore, MappingStoreConfig, MemoryMappingStore, Secr
 #[test]
 #[ignore = "Linux専用・core_pattern/rootが必要な環境限定 (docs/known-gaps.md P2-T6参照)"]
 fn forced_coredump_contains_no_plaintext_secret() {
-    let marker = format!(
-        "GEDOKU-P2T6-MARKER-{}-DO-NOT-LEAK",
-        std::process::id()
-    );
+    let marker = format!("GEDOKU-P2T6-MARKER-{}-DO-NOT-LEAK", std::process::id());
 
     let pid = unsafe { libc::fork() };
     assert!(pid >= 0, "fork failed");
@@ -34,8 +32,7 @@ fn forced_coredump_contains_no_plaintext_secret() {
 
         let store = MemoryMappingStore::with_master_key([7u8; 32], MappingStoreConfig::default());
         let realm = RealmId::new("p2-t6-coredump-realm");
-        let placeholder =
-            store.get_or_create(&realm, "SECRET", SecretString::new(marker.clone()));
+        let placeholder = store.get_or_create(&realm, "SECRET", SecretString::new(marker.clone()));
         let resolved = store
             .resolve(&realm, &placeholder)
             .expect("must resolve just-stored secret");

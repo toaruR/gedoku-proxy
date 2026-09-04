@@ -37,8 +37,7 @@ fn disk_io_syscalls_never_carry_plaintext_secrets() {
         return;
     }
 
-    let trace_path =
-        std::env::temp_dir().join(format!("p4_t4_strace_{}.log", std::process::id()));
+    let trace_path = std::env::temp_dir().join(format!("p4_t4_strace_{}.log", std::process::id()));
     let exe = std::env::current_exe().expect("current_exe");
 
     let status = Command::new("strace")
@@ -66,9 +65,8 @@ fn disk_io_syscalls_never_carry_plaintext_secrets() {
         "traced child process exited with failure: {status:?}"
     );
 
-    let trace = std::fs::read_to_string(&trace_path).unwrap_or_else(|e| {
-        panic!("failed to read strace output at {trace_path:?}: {e}")
-    });
+    let trace = std::fs::read_to_string(&trace_path)
+        .unwrap_or_else(|e| panic!("failed to read strace output at {trace_path:?}: {e}"));
     std::fs::remove_file(&trace_path).ok();
 
     for secret in CORPUS {
