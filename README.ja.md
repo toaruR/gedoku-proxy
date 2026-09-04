@@ -33,10 +33,26 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:18787
 export ANTHROPIC_AUTH_TOKEN=sk-...   # 既存の資格情報をそのまま使用
 ```
 
+## 設定ファイル
+
+環境変数の代わりにTOMLファイルでも設定できる。解決順（先に見つかったものが優先）:
+
+1. `--config <path>` / `-c <path>` 起動引数
+2. `GEDOKU_CONFIG_FILE` 環境変数
+3. カレントディレクトリに `configs/gedoku.toml` があればそれ
+4. 環境変数群（下表、未指定項目は既定値）
+
+```bash
+cargo run -p gedoku-server --bin gedoku-proxy -- --config configs/gedoku.toml
+```
+
+設定可能な全項目は [configs/gedoku.example.toml](configs/gedoku.example.toml) を参照。未知キーや型不一致がある場合は起動に失敗する。
+
 ## 環境変数
 
 | 変数 | 既定値 | 説明 |
 |---|---|---|
+| `GEDOKU_CONFIG_FILE` | なし | TOML設定ファイルのパス（上記「設定ファイル」参照） |
 | `GEDOKU_LISTEN_ADDR` | `127.0.0.1:18787` | 待ち受けアドレス |
 | `GEDOKU_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | 転送先ベースURL |
 | `GEDOKU_UPSTREAM_AUTH_MODE` | `passthrough` | 資格情報転送モード: `passthrough` / `replace` / `augment` |

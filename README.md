@@ -33,10 +33,26 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:18787
 export ANTHROPIC_AUTH_TOKEN=sk-...   # reuse your existing credentials
 ```
 
+## Config File
+
+Settings can also come from a TOML file instead of environment variables. Resolution order (first match wins):
+
+1. `--config <path>` / `-c <path>` CLI argument
+2. `GEDOKU_CONFIG_FILE` environment variable
+3. `configs/gedoku.toml`, if it exists in the current directory
+4. Environment variables (see below), each falling back to its default
+
+```bash
+cargo run -p gedoku-server --bin gedoku-proxy -- --config configs/gedoku.toml
+```
+
+See [configs/gedoku.example.toml](configs/gedoku.example.toml) for all available keys. Unknown keys or type mismatches make the process fail to start.
+
 ## Environment Variables
 
 | Variable | Default | Description |
 |---|---|---|
+| `GEDOKU_CONFIG_FILE` | none | Path to a TOML config file (see Config File above) |
 | `GEDOKU_LISTEN_ADDR` | `127.0.0.1:18787` | Listen address |
 | `GEDOKU_UPSTREAM_BASE_URL` | `https://api.anthropic.com` | Upstream base URL |
 | `GEDOKU_UPSTREAM_AUTH_MODE` | `passthrough` | Credential forwarding mode: `passthrough` / `replace` / `augment` |
