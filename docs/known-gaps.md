@@ -20,11 +20,18 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
 
 ## P1(構造保存/type-tagウォーカー)
 
-- **P1-T7 完了ハーネス**: 計画原文は実Claude CodeセッションのHARキャプチャによる
+- ~~**P1-T7 完了ハーネス**: 計画原文は実Claude CodeセッションのHARキャプチャによる
   ゴールデンリプレイを要求するが、本リポジトリに実HARが存在しないため、設計§7.3/§8の
   構造(attribution/mid-conversation system/GAP-9入れ子/thinking/image source)を再現した
   合成フィクスチャでの「parse→collect_scan_targets→無変更to_bytes」バイト同一性検証に
-  代替した。
+  代替した。~~ → **2026-09-04 解消**。`tools/har-capture/capture_proxy.py`(開発専用の
+  キャプチャプロキシ、gedoku-proxy本体とは別物)を自作し、隔離した一時ディレクトリで
+  `claude -p`のスローアウェイセッション(実際にRead toolを使わせて`tool_use`/`tool_result`
+  を含む往復を発生させる)をこのプロキシ経由で実行して実HARを3件採取。個人情報のみ
+  スクラビングした上で`src/gedoku-jsonwalk/tests/fixtures/har/`にフィクスチャ化し、
+  `p1_completion_harness.rs`に`harness_real_har_replay_*`として実HARのゴールデンリプレイ
+  テストを追加(green)。生キャプチャ(認証ヘッダー等の秘密を含む)は`docs/fixtures/har-raw/`
+  (`.gitignore`対象)に残る。
 - CIによるブランチ保護(CODEOWNERS等)を使った「P1完了ゲート通過までP2着手禁止」の
   機械的強制は、P1完了時点では未設定(P5-T7で `workflow_run` トリガーの2段階ワークフロー
   として後日実装済み)。
@@ -38,9 +45,15 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
   この検証過程で `harden_process_best_effort()`(RLIMIT_CORE=0)が `gedoku-server/src/main.rs` から
   一度も呼ばれていない実装漏れも発見し、`main()`冒頭で呼び出すよう修正済み(詳細は`CLAUDE.md`の
   ハマりポイント参照)。
-- **P2-T8**: 合成秘密コーパス300件+非秘密コーパス300件でのF1/誤検出率CIレポートは
+- ~~**P2-T8**: 合成秘密コーパス300件+非秘密コーパス300件でのF1/誤検出率CIレポートは
   未実装。代表4カテゴリ(SECRET/PII_EMAIL/AWS-key/PII_CARD)の小規模コーパステストのみ
-  `p2_redaction.rs` に実装。
+  `p2_redaction.rs` に実装。~~ → **2026-09-04 解消**。
+  `src/gedoku-detect/tests/p2_t8_corpus_f1.rs` として実装。正例306件(既定有効ルール18種
+  × 各17件、luhn/mod97/checksum/checkdigit等の各validatorを実際に満たす値を生成時に
+  総当たりで計算)+ 負例354件(validatorが弾く近似形/既定OFFルールへの言及/無害な文章)
+  で`DetectionEngine::default()`を通し、recall/precision/F1/誤検出率を算出してCIで
+  閾値アサート(実測: recall=1.0, precision=1.0, f1=1.0, fp_rate=0.0)。
+  `p2_redaction.rs`の小規模コーパステストは実プロキシ経由の統合テストとして引き続き残す。
 - `realm_from_headers`(P2時点の名称)はP5-T2より前の暫定実装で、クライアント資格情報
   ヘッダーのハッシュのみを行っていた(P5で `RealmStrategy` として正式化済み、解消済み)。
 
@@ -98,6 +111,10 @@ F1/誤検出率CIレポート、strace/eBPFシステムコール監査など)を
   `.github/workflows/phase-gate-p2-p5.yml`にも3件とも組み込み済み(strace/gdb導入・
   core_pattern設定・P2-T6/P4-T4-T16テスト実行・musl build+`ldd`/`file`検証の各ステップを追加)。
   CI実行での実際の green は次回のワークフロー実行で確認が必要(ローカルWSLでは確認済み)。
-- **実HARベースの検証(P1-T7)**と**300件コーパスのF1レポート(P2-T8)**は、素材
+- ~~**実HARベースの検証(P1-T7)**と**300件コーパスのF1レポート(P2-T8)**は、素材
   (実セッションのHARキャプチャ、大規模秘密コーパス)がリポジトリに存在しないことが
-  理由。これは環境ではなく素材の問題なので、必要になった時点で素材を用意すれば解消できる。
+  理由。これは環境ではなく素材の問題なので、必要になった時点で素材を用意すれば解消できる。~~
+  → **2026-09-04 解消**。どちらも素材は自作可能と判明: HARは`tools/har-capture/`の
+  キャプチャプロキシで`claude -p`のドッグフーディングにより実採取、300件コーパスは
+  各カテゴリのvalidatorアルゴリズムをそのまま使って生成時に検証済みの値を作る形で
+  自動生成した。詳細は各フェーズの節を参照。

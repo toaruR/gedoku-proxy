@@ -19,3 +19,6 @@ __pycache__/
 
 target/
 docs/knowledge-kit-usage.md
+
+# 実HARキャプチャの生データ(未スクラビング、秘密情報を含みうる)
+docs/fixtures/har-raw/

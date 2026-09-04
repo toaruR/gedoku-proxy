@@ -1,14 +1,14 @@
 //! P1 完了判定ハーネス (計画 P1-T7)。
 //!
 //! 計画の DoD は「実際の Claude Code セッションから採取した HAR ファイルを
-//! insta golden としてリプレイし、差分ゼロを証明する」だが、本リポジトリには
-//! 実セッションの HAR キャプチャが存在しない (取得は運用側のタスクであり
-//! P1 実装単独では用意できない)。そのため本ハーネスは **代替として**、
-//! 設計 §7.3/§8 の各構造 (attribution block, mid-conversation role:system,
-//! GAP-9 の入れ子ブロック, thinking/signature, image source) を再現した
-//! 合成フィクスチャに対し、P1 パイプライン (parse → collect_scan_targets →
-//! 無変更で to_bytes) が「無検閲のままバイト同一性を保つ」ことを直接検証する。
-//! 実 HAR によるリプレイは §5.1 の未了事項として引き続き残す。
+//! insta golden としてリプレイし、差分ゼロを証明する」。`fixtures/har/` には
+//! `tools/har-capture/` のキャプチャプロキシで実際に Claude Code セッションを
+//! 中継して採取したリクエストボディ(個人情報のみスクラビング済み、構造は無加工)
+//! を格納しており、`harness_real_har_replay_*` がそれを parse → collect_scan_targets
+//! → 無変更で to_bytes に通すゴールデンリプレイになっている。
+//! それに加えて、設計 §7.3/§8 の各構造 (attribution block, mid-conversation
+//! role:system, GAP-9 の入れ子ブロック, thinking/signature, image source) を
+//! 個別に再現した合成フィクスチャで、各構造単位の境界条件も直接検証する。
 
 use gedoku_jsonwalk::{collect_scan_targets, parse, to_bytes};
 use serde_json::{json, Value};
@@ -24,6 +24,32 @@ fn assert_uncensored_byte_identity(body: &Value) -> Vec<u8> {
         "P1 (無検閲) では parse→to_bytes は no-op でなければならない"
     );
     out
+}
+
+/// 実 Claude Code セッションから採取した HAR (リクエストボディ) を、
+/// 無検閲パイプライン (parse→to_bytes) にそのまま通してバイト同一性を検証する。
+fn assert_real_har_replay(raw: &str) {
+    let body: Value = serde_json::from_str(raw).expect("fixture is valid JSON");
+    let out = assert_uncensored_byte_identity(&body);
+    let reparsed: Value = serde_json::from_slice(&out).unwrap();
+    // 実セッションなので system/messages が実在し、tool_use/tool_result/thinking を含む。
+    assert!(reparsed["system"].is_array() || reparsed["system"].is_string());
+    assert!(!reparsed["messages"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn harness_real_har_replay_1() {
+    assert_real_har_replay(include_str!("fixtures/har/real_session_request_1.json"));
+}
+
+#[test]
+fn harness_real_har_replay_2() {
+    assert_real_har_replay(include_str!("fixtures/har/real_session_request_2.json"));
+}
+
+#[test]
+fn harness_real_har_replay_3() {
+    assert_real_har_replay(include_str!("fixtures/har/real_session_request_3.json"));
 }
 
 #[test]
