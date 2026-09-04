@@ -117,7 +117,7 @@ pub static RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
             capture_group: 1,
             enabled_by_default: true,
             pattern: re(
-                r#"(?i)(?:authorization|bearer|api[_-]?key|token|passwd|password)\s*[:=]\s*(\S{8,})"#,
+                r#"(?i)(?:authorization|bearer|api[_-]?key|token|passwd|password)["']?\s*[:=]\s*["']?([^"'\s,}]{8,})"#,
             ),
             validator: Some(validators::high_entropy_value),
         },
@@ -283,6 +283,30 @@ mod tests {
         assert!(scan("contact real.person@acme-corp.io now")
             .iter()
             .any(|x| x.rule_id == "email"));
+    }
+
+    #[test]
+    fn bearer_ctx_detects_quoted_json_key_value() {
+        let text = r#""google_maps_api_key": "AIzaSyCP4H0_3Ft0Qd-_Z8zl0THnmuN74raaaaa","#;
+        let d = scan(text);
+        let hit = d.iter().find(|x| x.rule_id == "bearer_ctx").unwrap();
+        assert_eq!(hit.text(text), "AIzaSyCP4H0_3Ft0Qd-_Z8zl0THnmuN74raaaaa");
+    }
+
+    #[test]
+    fn bearer_ctx_detects_single_quoted_python_style() {
+        let text = "'google_maps_api_key': 'AIzaSyCP4H0_3Ft0Qd-_Z8zl0THnmuN74raaaaa',";
+        let d = scan(text);
+        let hit = d.iter().find(|x| x.rule_id == "bearer_ctx").unwrap();
+        assert_eq!(hit.text(text), "AIzaSyCP4H0_3Ft0Qd-_Z8zl0THnmuN74raaaaa");
+    }
+
+    #[test]
+    fn bearer_ctx_still_detects_unquoted_env_style() {
+        let text = "export API_KEY=abcd1234efgh5678zzz";
+        let d = scan(text);
+        let hit = d.iter().find(|x| x.rule_id == "bearer_ctx").unwrap();
+        assert_eq!(hit.text(text), "abcd1234efgh5678zzz");
     }
 
     #[test]
