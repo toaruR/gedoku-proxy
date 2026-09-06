@@ -2,7 +2,7 @@
 
 [日本語](README.ja.md)
 
-### Detoxify what you send your agent
+### Detoxify communications sent by your agent
 
 A transparent proxy that auto-redacts API keys and emails into type-aware placeholders before they reach the upstream, then restores them in the response. Just point `ANTHROPIC_BASE_URL` at it. Rust / axum.
 

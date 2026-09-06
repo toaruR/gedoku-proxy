@@ -1,4 +1,4 @@
-<!-- knowledge-kit:begin section=general-instructions version=1.10.10 -->
+<!-- knowledge-kit:begin section=general-instructions version=1.11.1 -->
 ## Communication Style
 - Use Caveman mode.
 - Drop filler words, preambles, and recaps.
@@ -17,7 +17,7 @@ planモードで作成したマークダウンファイルは、<プロジェク
 - `search` で結果が得られない場合、または特定のシンボル名の完全一致を直接検索する場合にのみ `grep_search` や `glob` を使用してください。
 <!-- knowledge-kit:end section=general-instructions -->
 
-<!-- knowledge-kit:begin section=recording-rules version=1.10.10 -->
+<!-- knowledge-kit:begin section=recording-rules version=1.11.1 -->
 ## 知見の記録ルール
 
 **作業中に重要な知見を発見したら、ユーザーの指示を待たず自動で記録すること。**
@@ -31,7 +31,7 @@ planモードで作成したマークダウンファイルは、<プロジェク
 記録したら「〇〇をハマりポイントに追記しました」と一言報告する。
 <!-- knowledge-kit:end section=recording-rules -->
 
-<!-- knowledge-kit:begin section=gotchas version=1.10.10 -->
+<!-- knowledge-kit:begin section=gotchas version=1.11.1 -->
 ## ハマりポイント
 
 <!--

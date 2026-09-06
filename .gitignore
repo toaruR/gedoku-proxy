@@ -26,3 +26,5 @@ docs/fixtures/har-raw/
 # debug_dump_replacements 有効時の固定パス出力先(原文は含まないが誤コミット防止)
 gedoku-replacements-debug.log
 configs/gedoku.toml
+.knowledge-kit/source.json
+.strict-goal/

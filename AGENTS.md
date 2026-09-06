@@ -1,4 +1,4 @@
-<!-- knowledge-kit:begin section=agents-entry version=1.10.10 -->
+<!-- knowledge-kit:begin section=agents-entry version=1.11.1 -->
 # AGENTS.md
 
 ## 最重要: CLAUDE.md を必ず先に読むこと
