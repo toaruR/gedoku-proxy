@@ -2,7 +2,7 @@
 //! 計画 §5.2 の P2-T7/P2-T8 に対応する。
 
 use bytes::Bytes;
-use gedoku_core::{AuthMode, Config, Mode, RealmStrategy, UnknownPathPolicy};
+use gedoku_core::{AuthMode, Config, JaPiiConfig, Mode, RealmStrategy, UnknownPathPolicy};
 use gedoku_mock_upstream::{MockUpstream, ResponseSpec};
 use http::StatusCode;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ fn base_config(upstream_base_url: String) -> Config {
         realm_strategy: RealmStrategy::Credential,
         mode: Mode::Enforce,
         debug_dump_replacements: false,
+        ja_pii: JaPiiConfig::default(),
     }
 }
 

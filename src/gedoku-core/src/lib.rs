@@ -113,6 +113,58 @@ pub struct Config {
     /// デバッグ用途: 置換したプレースホルダー(原文は含まない)とカテゴリ、
     /// 前後数語の文脈を固定パスのテキストファイルへ追記する (既定 off)。
     pub debug_dump_replacements: bool,
+    /// 日本語PII (住所/氏名) Aho-Corasick辞書検出の設定 (設計 §7.10.4.3)。
+    pub ja_pii: JaPiiConfig,
+}
+
+/// `[ja_pii]` テーブル (設計 §7.10.4.3, §7.10.13)。マスタースイッチは既定 off。
+#[derive(Debug, Clone, PartialEq)]
+pub struct JaPiiConfig {
+    pub enabled: bool,
+    pub address: JaAddressConfig,
+    pub name: JaNameConfig,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JaAddressConfig {
+    pub enabled: bool,
+    /// 空文字列 = 内蔵 `pref_city.tsv` のみを使う。
+    pub dict_path: String,
+    /// 空文字列 = 町丁目辞書の追加なし (同梱しない、§7.10.2)。
+    pub extra_town_dict_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct JaNameConfig {
+    pub enabled: bool,
+    /// 空文字列 = 姓辞書なし、氏名検出は常に no-op (ライセンス上同梱しない、§7.10.2)。
+    pub surname_dict_path: String,
+    pub honorifics: Vec<String>,
+}
+
+impl Default for JaPiiConfig {
+    fn default() -> Self {
+        JaPiiConfig {
+            enabled: false,
+            address: JaAddressConfig {
+                enabled: false,
+                dict_path: String::new(),
+                extra_town_dict_path: String::new(),
+            },
+            name: JaNameConfig {
+                enabled: false,
+                surname_dict_path: String::new(),
+                honorifics: default_honorifics(),
+            },
+        }
+    }
+}
+
+fn default_honorifics() -> Vec<String> {
+    ["様", "さん", "氏", "殿", "君", "先生"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
 }
 
 impl Config {
@@ -161,6 +213,30 @@ impl Config {
             debug_dump_replacements: env::var("GEDOKU_DEBUG_DUMP_REPLACEMENTS")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false),
+            ja_pii: JaPiiConfig {
+                enabled: env::var("GEDOKU_JA_PII_ENABLED")
+                    .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                    .unwrap_or(false),
+                address: JaAddressConfig {
+                    enabled: env::var("GEDOKU_JA_PII_ADDRESS_ENABLED")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false),
+                    dict_path: env::var("GEDOKU_JA_PII_ADDRESS_DICT_PATH").unwrap_or_default(),
+                    extra_town_dict_path: env::var("GEDOKU_JA_PII_ADDRESS_EXTRA_TOWN_DICT_PATH")
+                        .unwrap_or_default(),
+                },
+                name: JaNameConfig {
+                    enabled: env::var("GEDOKU_JA_PII_NAME_ENABLED")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false),
+                    surname_dict_path: env::var("GEDOKU_JA_PII_NAME_SURNAME_DICT_PATH")
+                        .unwrap_or_default(),
+                    honorifics: env::var("GEDOKU_JA_PII_NAME_HONORIFICS")
+                        .ok()
+                        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+                        .unwrap_or_else(default_honorifics),
+                },
+            },
         }
     }
 
@@ -215,6 +291,43 @@ impl Config {
             debug_dump_replacements: file
                 .debug_dump_replacements
                 .unwrap_or(defaults.debug_dump_replacements),
+            ja_pii: JaPiiConfig {
+                enabled: file.ja_pii.enabled.unwrap_or(defaults.ja_pii.enabled),
+                address: JaAddressConfig {
+                    enabled: file
+                        .ja_pii
+                        .address
+                        .enabled
+                        .unwrap_or(defaults.ja_pii.address.enabled),
+                    dict_path: file
+                        .ja_pii
+                        .address
+                        .dict_path
+                        .unwrap_or(defaults.ja_pii.address.dict_path),
+                    extra_town_dict_path: file
+                        .ja_pii
+                        .address
+                        .extra_town_dict_path
+                        .unwrap_or(defaults.ja_pii.address.extra_town_dict_path),
+                },
+                name: JaNameConfig {
+                    enabled: file
+                        .ja_pii
+                        .name
+                        .enabled
+                        .unwrap_or(defaults.ja_pii.name.enabled),
+                    surname_dict_path: file
+                        .ja_pii
+                        .name
+                        .surname_dict_path
+                        .unwrap_or(defaults.ja_pii.name.surname_dict_path),
+                    honorifics: file
+                        .ja_pii
+                        .name
+                        .honorifics
+                        .unwrap_or(defaults.ja_pii.name.honorifics),
+                },
+            },
         })
     }
 
@@ -285,6 +398,7 @@ impl Config {
             realm_strategy: RealmStrategy::Credential,
             mode: Mode::Enforce,
             debug_dump_replacements: false,
+            ja_pii: JaPiiConfig::default(),
         }
     }
 }
@@ -307,6 +421,7 @@ struct FileConfig {
     realm_strategy: Option<String>,
     mode: Option<String>,
     debug_dump_replacements: Option<bool>,
+    ja_pii: FileJaPiiConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -314,6 +429,30 @@ struct FileConfig {
 struct FileHeaderPair {
     name: String,
     value: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileJaPiiConfig {
+    enabled: Option<bool>,
+    address: FileJaAddressConfig,
+    name: FileJaNameConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileJaAddressConfig {
+    enabled: Option<bool>,
+    dict_path: Option<String>,
+    extra_town_dict_path: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+struct FileJaNameConfig {
+    enabled: Option<bool>,
+    surname_dict_path: Option<String>,
+    honorifics: Option<Vec<String>>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -490,6 +629,68 @@ mod tests {
         );
         assert_eq!(Config::config_path_from_args(args(&["--other"])), None);
         assert_eq!(Config::config_path_from_args(args(&[])), None);
+    }
+
+    #[test]
+    fn ja_pii_section_omitted_uses_defaults() {
+        let cfg = Config::from_toml_str("").expect("empty toml is valid");
+        assert!(!cfg.ja_pii.enabled);
+        assert!(!cfg.ja_pii.address.enabled);
+        assert_eq!(cfg.ja_pii.address.dict_path, "");
+        assert_eq!(cfg.ja_pii.address.extra_town_dict_path, "");
+        assert!(!cfg.ja_pii.name.enabled);
+        assert_eq!(cfg.ja_pii.name.surname_dict_path, "");
+        assert_eq!(
+            cfg.ja_pii.name.honorifics,
+            vec!["様", "さん", "氏", "殿", "君", "先生"]
+        );
+    }
+
+    #[test]
+    fn ja_pii_section_parses_overrides() {
+        let raw = r#"
+            [ja_pii]
+            enabled = true
+
+            [ja_pii.address]
+            enabled = true
+            dict_path = "custom.tsv"
+            extra_town_dict_path = "town.tsv"
+
+            [ja_pii.name]
+            enabled = true
+            surname_dict_path = "surname.tsv"
+            honorifics = ["様"]
+        "#;
+        let cfg = Config::from_toml_str(raw).expect("valid toml");
+        assert!(cfg.ja_pii.enabled);
+        assert!(cfg.ja_pii.address.enabled);
+        assert_eq!(cfg.ja_pii.address.dict_path, "custom.tsv");
+        assert_eq!(cfg.ja_pii.address.extra_town_dict_path, "town.tsv");
+        assert!(cfg.ja_pii.name.enabled);
+        assert_eq!(cfg.ja_pii.name.surname_dict_path, "surname.tsv");
+        assert_eq!(cfg.ja_pii.name.honorifics, vec!["様"]);
+    }
+
+    #[test]
+    fn ja_pii_section_rejects_unknown_key() {
+        let raw = r#"
+            [ja_pii]
+            enabled = true
+            typo = true
+        "#;
+        let err = Config::from_toml_str(raw).expect_err("must reject unknown key");
+        assert!(matches!(err, ConfigError::Parse(_)));
+    }
+
+    #[test]
+    fn ja_pii_section_rejects_type_mismatch() {
+        let raw = r#"
+            [ja_pii.address]
+            enabled = "not-a-bool"
+        "#;
+        let err = Config::from_toml_str(raw).expect_err("must reject type mismatch");
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 
     /// CLI引数で指定した設定ファイルが最優先で読まれる (環境変数/既定パスより優先)。

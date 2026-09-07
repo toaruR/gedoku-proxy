@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gedoku-proxy/schema/ja_pii.json",
+  "title": "gedoku.toml [ja_pii] セクション",
+  "type": "object",
+  "required": ["enabled", "address", "name"],
+  "additionalProperties": false,
+  "properties": {
+    "enabled": { "type": "boolean" },
+    "address": {
+      "type": "object",
+      "required": ["enabled", "dict_path", "extra_town_dict_path"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "dict_path": { "type": "string" },
+        "extra_town_dict_path": { "type": "string" }
+      }
+    },
+    "name": {
+      "type": "object",
+      "required": ["enabled", "surname_dict_path", "honorifics"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "surname_dict_path": { "type": "string" },
+        "honorifics": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 0
+        }
+      }
+    }
+  }
+}

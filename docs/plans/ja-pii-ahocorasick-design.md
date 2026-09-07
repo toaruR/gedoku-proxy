@@ -93,6 +93,13 @@ aho-corasick.workspace = true   # 追加。workspace には既に定義済み (a
 
 ### 7.10.4.1 スキャン関数 (実行時ホットパス)
 
+モジュールは `ja_dict::address` と `ja_dict::name` に完全分離する
+(同名 `scan()` はそれぞれ別モジュールに属し、呼び出し側は必ず
+`ja_dict::address::scan(...)` / `ja_dict::name::scan(...)` とフルパスで
+参照する。1つのコードブロックへの並記は避け、モジュール宣言ごとに分ける)。
+
+`ja_dict::address` (`src/gedoku-detect/src/ja_dict/address.rs`):
+
 ```rust
 /// 住所辞書スキャン。
 /// 入力: text (1スキャン対象文字列、UTF-8。L0 が確定した対象パスの文字列のみが渡る契約)
@@ -101,7 +108,11 @@ aho-corasick.workspace = true   # 追加。workspace には既に定義済み (a
 ///       検出0件は正常系であり Result ではなく空 Vec で表す)
 /// エラー: パニックしない。automaton 構築済み前提のため入出力I/Oを一切行わない。
 pub fn scan(text: &str, automaton: &AddressAutomaton) -> Vec<Detection>;
+```
 
+`ja_dict::name` (`src/gedoku-detect/src/ja_dict/name.rs`):
+
+```rust
 /// 氏名辞書スキャン。
 /// 入力: text, dict: &NameDict (surname_dict_path 未設定なら NameDict::empty() が渡り、
 ///       この場合 scan() は必ず空 Vec を返す = 明示的 no-op 契約)
@@ -372,9 +383,26 @@ tracing::info!(
 );
 ```
 
-これにより第三者は「その時点でどのバージョンの辞書が有効だったか」を
-起動ログの sha256 と `assets/ja/README.md` のスナップショット日付から
-成果物 (辞書ファイルそのもの) なしで再構成できる。
+fail_closed で起動を中断する経路 (`JaDictError` の全バリアント) にも、
+**同じ `target: "gedoku_audit"` 系統・同じ構造化フィールド形式**でログを
+1行追加する (受理と拒否を非対称なログ形式にしない):
+
+```rust
+tracing::error!(
+    target: "gedoku_audit",
+    event = "ja_pii_dict_load_rejected",
+    path = %err_path.display(),
+    reason = %ja_dict_error, // JaDictError の Display 実装
+    "gedoku-audit: ja_pii dictionary load rejected (fail_closed)"
+);
+```
+
+これにより第三者は「その時点でどのバージョンの辞書が有効だったか
+(受理の場合)」を起動ログの sha256 と `assets/ja/README.md` のスナップショット
+日付から、また「なぜ起動しなかったか (拒否の場合)」を `ja_pii_dict_load_rejected`
+の `path`/`reason` から、どちらも成果物 (辞書ファイルそのもの) なしで
+再構成できる。受理・拒否のどちらのイベントも同じ `target` 配下に出力される
+契約のため、監査ログの集約基盤 (P4) を変更せずに両方を拾える。
 
 ---
 
@@ -558,7 +586,7 @@ spans.retain(|d| d.confidence >= self.min_confidence);
 | # | 手口 | 機構 |
 |---|---|---|
 | 1 | コーパスに辞書丸暗記の値だけを入れて F1 を水増し | ホールドアウト10% (辞書に含めない姓/市区町村) を必須化し、乖離を CI で監視 (§7.10.12) |
-| 2 | confidence を閾値ぎりぎりに調整して「デフォルトで守れている」ように見せかけ、実運用の見逃しをログで隠す | 監査ログのカテゴリ別件数 (§7.10.11) を継続監視する運用要件を明記。異常値検知は既存 `gedoku_log_guard_trips_total` 相当のメトリクス拡張として今後の運用課題に位置づける (v1では検出のみ、アラートは範囲外と明示) |
+| 2 | confidence を閾値ぎりぎりに調整して「デフォルトで守れている」ように見せかけ、実運用の見逃しをログで隠す | (a) §7.10.7 の confidence 表と実装のハードコード定数を突き合わせる `#[test]` (`ja_pii_confidence_table_matches_doc`) を追加し、本文更新なしの無断変更を CI で **拒否** する。(b) 個々の検出の confidence 値そのものを `RedactionRecord` に残す設計ではないため件数集計だけでは閾値操作を直接検知できない限界があり、これは **限界として明記**する (現状は (a) のコード改変検知のみが拒否可能で、閾値ぎりぎり運用そのものの実行時検知は範囲外)。監査ログのカテゴリ別件数 (§7.10.11) を継続監視する運用要件は補助的に明記する |
 | 3 | ゼロ幅文字/結合文字/全角半角の意図的挿入で辞書マッチを回避 | NFKC正規化を辞書マッチ前に必須化 (失敗モード#7と同一機構)。**限界**: 正規化で吸収できない同音異字による回避 (例: 異体字セレクタ) は v1 では対応せず、既知の限界として明記する (拒否できない) |
 | 4 | 運用者が Allowlist に過度に広い正規表現 (`.*` 等) を登録して全検出を無効化する | これは運用者本人の意図的操作であり、システムとして拒否することはできない (**限界として明記**)。監査ログの `counts` が恒常的に0になる異常を検知する運用手順をドキュメント化することのみ対応可能 |
 | 5 | 姓辞書TSVに矛盾行 (同一姓が `ambiguous=0` と `ambiguous=1` の両方) を混入させ挙動を不定にする | ローダーが重複キーを `JaDictError::DuplicateKey` として **拒否** し、起動時 fail_closed で弾く (§7.10.4.2) |

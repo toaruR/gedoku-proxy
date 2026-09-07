@@ -9,6 +9,7 @@ pub mod category;
 pub mod detection;
 pub mod engine;
 pub mod entropy;
+pub mod ja_dict;
 pub mod overlap;
 pub mod rules;
 pub mod validators;

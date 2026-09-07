@@ -452,9 +452,13 @@ dependencies = [
 name = "gedoku-detect"
 version = "0.1.0"
 dependencies = [
+ "aho-corasick",
  "crc32fast",
  "regex",
  "serde_json",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
 ]
 
 [[package]]

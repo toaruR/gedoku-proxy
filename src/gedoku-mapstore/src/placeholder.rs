@@ -78,7 +78,11 @@ pub fn normalize(category: &str, value: &str) -> String {
             .chars()
             .filter(|c| !c.is_whitespace() && *c != '-')
             .collect(),
-        _ => nfkc, // SECRET 等: 追加正規化なし (完全一致のみ)
+        // 姓名間の空白(半角/全角/複数)を単一の半角スペースへ統一する (設計§7.10.10)。
+        "PII_NAME_JA" => nfkc.split_whitespace().collect::<Vec<_>>().join(" "),
+        // PII_ADDRESS_JA を含むそれ以外: NFKCのみ。丁目/番地表記ゆれ(4丁目 vs 4-)は
+        // 別プレースホルダーのまま区別する (設計§7.10.10)。
+        _ => nfkc,
     }
 }
 
@@ -168,6 +172,29 @@ mod tests {
         assert_ne!(
             normalize("SECRET", "Sk-Ant-ABC"),
             normalize("SECRET", "sk-ant-abc")
+        );
+    }
+
+    #[test]
+    fn normalize_ja_name_collapses_whitespace() {
+        assert_eq!(
+            normalize("PII_NAME_JA", "山田\u{3000}太郎"),
+            normalize("PII_NAME_JA", "山田 太郎"),
+            "全角/半角スペースは同一プレースホルダーIDになるべき"
+        );
+        assert_eq!(
+            normalize("PII_NAME_JA", "山田   太郎"),
+            normalize("PII_NAME_JA", "山田 太郎"),
+            "連続スペースは単一スペースに畳まれるべき"
+        );
+    }
+
+    #[test]
+    fn normalize_ja_address_preserves_banchi_notation_difference() {
+        assert_ne!(
+            normalize("PII_ADDRESS_JA", "港区芝公園4丁目"),
+            normalize("PII_ADDRESS_JA", "港区芝公園4-"),
+            "丁目/ハイフン表記ゆれはNFKCのみでは同一視されないべき"
         );
     }
 

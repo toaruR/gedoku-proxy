@@ -516,6 +516,514 @@ function redact_request(body_json, realm, adapter):
 
 ---
 
+### 7.10.0 位置づけと動機
+
+| 方式 | 精度 (氏名/住所) | レイテンシ | 依存 | 既定 |
+|---|---|---|---|---|
+| Regex 列挙 (既存 L1 の延長) | 不可能 (開集合) | — | なし | 不採用 (付録 A.11) |
+| NER (Transformer, 既存 §7.1 L3) | 高 (未知語にも強い) | 10〜100ms/KB, CPU依存 | ONNX/candle 等の新規重量依存 | 既定 OFF (据え置き) |
+| **Aho-Corasick 辞書照合 (本書, L3')** | 中〜高 (辞書に無い語は取れない) | µs/KB 級 | `aho-corasick` (導入済み) | **既定 OFF、フラグ2枚 (住所/氏名) を個別に持つ** |
+
+**採用理由**: gedoku-proxy の主戦場はシークレット (regex+検証関数で足りる) だが、
+日本国内利用では住所・氏名の混入リスクも高い。NER を待たずに「辞書に載っている
+既知の地名・姓」だけでも高速に拾えれば実用上の価値が大きい。ただし辞書は開集合の
+一部しかカバーできないため、**NER の代替ではなく、NER 導入までの実用的な中間解**、
+かつ NER 導入後も併用可能な補助レイヤと位置づける。
+
+---
+
+### 7.10.1 カテゴリ
+
+`src/gedoku-detect/src/category.rs` に追加:
+
+```rust
+pub const PII_ADDRESS_JA: &str = "PII_ADDRESS_JA";
+pub const PII_NAME_JA: &str = "PII_NAME_JA";
+```
+
+既存カテゴリ (`PII_EMAIL` 等) と同じ `&'static str` の閉じてない集合に素直に足すだけ。
+将来 L3 NER を有効化する場合も、氏名/住所には同じ2定数を使うことを要件化する
+(付録 A.1 の失敗モード#9)。
+
+---
+
+### 7.10.2 辞書のソースとライセンス
+
+| 辞書 | 内容 | ソース | ライセンス | 既定同梱 |
+|---|---|---|---|---|
+| 住所 (`pref_city.tsv`) | 47都道府県 + 市区町村・特別区・政令市の区 (計 約1,900件) | 総務省「全国地方公共団体コード」公表データのスナップショット | 政府標準利用規約2.0 (CC BY 相当、出典表示で再配布可) | **同梱する** (`include_str!`) |
+| 住所拡張 (町丁目) | 大字・町丁目レベル (数十万件) | 運用者が用意 (例: 日本郵便 `KEN_ALL.CSV` 由来) | 運用者の入手元次第 | 同梱しない。`extra_town_dict_path` で任意追加 |
+| 姓 (`surname.tsv`) | 姓 + 曖昧フラグ + 頻度順位 | **未定 (意図的)**。公的機関が無償公開する全国姓データは存在せず、民間データセットは商用可否が個別確認事項 | 運用者が自分の権利で用意した辞書のみ許可 | **同梱しない (空)**。`surname_dict_path` 未設定なら氏名検出は常に no-op |
+
+**意思決定**: 住所 (行政区画名) は政府の公開データで再配布リスクが低いので同梱する。
+姓は「同梱してしまうと出典未確認データを配布することになる」リスクの方が
+「デフォルトで守れる範囲が狭い」デメリットより重いと判断し、**v1 では姓辞書を
+一切同梱しない**。これは「氏名検出は既定で機能しない」ことを意味するが、
+付録 A.1 の失敗モード表で明示し、隠さない。
+
+---
+
+### 7.10.3 モジュール構成
+
+```
+src/gedoku-detect/
+  assets/ja/
+    pref_city.tsv        # 同梱辞書 (§7.10.2)。1行目ヘッダー "name\tkind"
+    README.md            # スナップショット日付・出典・更新手順
+  src/ja_dict/
+    mod.rs                # 公開API: JaPiiConfig, ja_pii_scan()
+    dict.rs                # AhoCorasick 構築・TSV ローダー・JaDictError
+    address.rs             # 住所アンカー検出 + 丁目/番地/号 拡張
+    name.rs                # 姓アンカー検出 + 名/敬称による確信度昇格
+    error.rs               # JaDictError
+```
+
+`Cargo.toml` (gedoku-detect) 差分:
+
+```toml
+[dependencies]
+regex.workspace = true
+crc32fast.workspace = true
+serde_json.workspace = true
+aho-corasick.workspace = true   # 追加。workspace には既に定義済み (aho-corasick = "1")
+```
+
+---
+
+### 7.10.4 インタフェース定義
+
+#### 7.10.4.1 スキャン関数 (実行時ホットパス)
+
+モジュールは `ja_dict::address` と `ja_dict::name` に完全分離する
+(同名 `scan()` はそれぞれ別モジュールに属し、呼び出し側は必ず
+`ja_dict::address::scan(...)` / `ja_dict::name::scan(...)` とフルパスで
+参照する。1つのコードブロックへの並記は避け、モジュール宣言ごとに分ける)。
+
+`ja_dict::address` (`src/gedoku-detect/src/ja_dict/address.rs`):
+
+```rust
+/// 住所辞書スキャン。
+/// 入力: text (1スキャン対象文字列、UTF-8。L0 が確定した対象パスの文字列のみが渡る契約)
+///       automaton: &AddressAutomaton (起動時に構築済み、Arc 経由で共有借用)
+/// 出力: Vec<Detection> (category は必ず PII_ADDRESS_JA。confidence は 0.50〜0.92。
+///       検出0件は正常系であり Result ではなく空 Vec で表す)
+/// エラー: パニックしない。automaton 構築済み前提のため入出力I/Oを一切行わない。
+pub fn scan(text: &str, automaton: &AddressAutomaton) -> Vec<Detection>;
+```
+
+`ja_dict::name` (`src/gedoku-detect/src/ja_dict/name.rs`):
+
+```rust
+/// 氏名辞書スキャン。
+/// 入力: text, dict: &NameDict (surname_dict_path 未設定なら NameDict::empty() が渡り、
+///       この場合 scan() は必ず空 Vec を返す = 明示的 no-op 契約)
+/// 出力: Vec<Detection> (category は必ず PII_NAME_JA。confidence は 0.65〜0.97)
+/// エラー: パニックしない。
+pub fn scan(text: &str, dict: &NameDict) -> Vec<Detection>;
+```
+
+#### 7.10.4.2 起動時ローダー (プロセス起動シーケンス内)
+
+```rust
+pub enum JaDictError {
+    Io { path: PathBuf, source: std::io::Error },
+    InvalidUtf8 { path: PathBuf },
+    MalformedRow { path: PathBuf, line: usize, reason: String },
+    DuplicateKey { path: PathBuf, line: usize, key: String },
+    EmptyDictionary { path: PathBuf },
+}
+
+/// 内蔵 pref_city.tsv (+ extra_path があれば追加) から AhoCorasick を構築する。
+/// 失敗時は Err を返し、呼び出し元 (Config::validate, 既存の起動時検証と同じ経路)
+/// がプロセス起動を中断する (既定 fail_closed、§18 起動時検証ポリシーに合流)。
+pub fn load_address_dict(extra_path: Option<&Path>) -> Result<AddressAutomaton, JaDictError>;
+
+/// surname_dict_path から姓辞書をロードする。path が None なら Ok(NameDict::empty())
+/// を返す (これがエラーではなく "無効" を表す唯一の経路)。
+pub fn load_surname_dict(path: Option<&Path>) -> Result<NameDict, JaDictError>;
+```
+
+#### 7.10.4.3 設定スキーマ (`configs/gedoku.toml` の `[ja_pii]` テーブル)
+
+TOML 実物:
+
+```toml
+[ja_pii]
+enabled = false
+
+[ja_pii.address]
+enabled = false
+dict_path = ""
+extra_town_dict_path = ""
+
+[ja_pii.name]
+enabled = false
+surname_dict_path = ""
+honorifics = ["様", "さん", "氏", "殿", "君", "先生"]
+```
+
+同じ形を JSON Schema (draft-07) として書き下したもの (自動検証用、付録 A.7 参照):
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://gedoku-proxy/schema/ja_pii.json",
+  "title": "gedoku.toml [ja_pii] セクション",
+  "type": "object",
+  "required": ["enabled", "address", "name"],
+  "additionalProperties": false,
+  "properties": {
+    "enabled": { "type": "boolean" },
+    "address": {
+      "type": "object",
+      "required": ["enabled", "dict_path", "extra_town_dict_path"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "dict_path": { "type": "string" },
+        "extra_town_dict_path": { "type": "string" }
+      }
+    },
+    "name": {
+      "type": "object",
+      "required": ["enabled", "surname_dict_path", "honorifics"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "surname_dict_path": { "type": "string" },
+        "honorifics": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 0
+        }
+      }
+    }
+  }
+}
+```
+
+エラー条件: 未知キー・型不一致は `configs/gedoku.example.toml` 冒頭のコメントにある
+既存ポリシー通り「起動時にエラーメッセージを出して失敗」に合流させる (新規の
+特別扱いをしない)。
+
+---
+
+### 7.10.5 住所検出アルゴリズム
+
+1. `AhoCorasickBuilder::new().match_kind(MatchKind::LeftmostLongest).build(&pref_city_patterns)`
+   で構築したオートマトンを `text` に対して1回線形スキャンする。
+2. 隣接するアンカー (前の一致の `end` と次の一致の `start` の間が0文字、または
+   全角/半角スペース0〜1文字のみ) を1つの住所スパンにマージする
+   (例: `"東京都"` + `"港区"` → `"東京都港区"`)。
+3. マージ後のスパン末尾から最大60文字の窓に対して、丁目/番地/号の拡張パターンを
+   適用しマッチすればスパン末尾を延長する:
+   `(?:[0-9〇一二三四五六七八九十百千]{1,4}(?:丁目|番地|番|号|-|ー)){1,4}`
+   (適用前に対象文字列を NFKC 正規化して全角数字・全角ハイフンの表記ゆれを吸収)。
+4. 確信度は §7.10.7 の表に従う。丁目/番地/号 拡張が付いたスパンのみ既定閾値
+   (0.75) を超え、単なる地名の言及 (「大阪出身です」等の裸の市区町村名) は
+   0.50〜0.55 のため **単独では redact されない** (regex 側 §7.5 の L2 と同じ
+   「保守的既定」の考え方)。
+
+**発見済みの限界 (付録 A.10 自己適用トレースで判明)**: 辞書は行政区画の
+正式名称 (`東京都`, `渋谷区` 等、接尾辞つき) のみを収録するため、口語的な
+接尾辞省略表記 (「渋谷に住んでます」の「渋谷」) はそもそも辞書に一致せず
+検出できない (見逃し)。これは意図的な v1 スコープ外であり、付録 A.1 の
+失敗モード表で「対応機構なし」と明記する。
+
+---
+
+### 7.10.6 氏名検出アルゴリズム
+
+1. `surname_dict_path` が未設定/空なら常に空 `Vec` を返して終了 (契約、§7.10.4.1)。
+2. 姓辞書 (TSV: `surname\tambiguous\tfreq_rank`) から構築した AhoCorasick
+   (`MatchKind::LeftmostLongest`) で `text` をスキャン。各エントリは
+   `ambiguous: bool` を持つ (例: `森`, `林`, `上`, `下`, `中`, `前` のような
+   一般語と衝突しやすい単漢字姓は `ambiguous=1`)。
+3. `ambiguous=1` の姓は、以下のいずれかの文脈昇格が無ければ破棄する
+   (単独では発火しない、confidence を計算する前に足切り):
+   - 直後(0〜1文字の空白/読点を挟んで可)に敬称リスト
+     (既定 `["様","さん","氏","殿","君","先生"]`, config で追加可) が続く
+   - 直後に「名」らしい 1〜4文字のかな/漢字ランが続き、かつ
+     (a) そのランが助詞/機能語ストップリスト
+     (`は,が,の,を,に,で,と,から,まで,です,でした,という,ばかり,...`) に
+     一致せず、**かつ** (b) 拡張ネガティブリスト
+     (`docs/resource/ja-name-negative-list.md` 参照。会社名接尾辞
+     (`電機,商事,製作所,工業,興業,商店,製菓,自動車,銀行,信用金庫,証券,不動産`)
+     に加え、学術・科学技術系 (`理論,学説,モデル,仮説,法則,定理,公式,方程式,
+     効果,現象`)、健康・スポーツ・技法系 (`体操,運動,メソッド,トレーニング,
+     ヨガ,式,流,術,法`)、社会・思想・トレンド系 (`主義,制度,世代,ブーム,政策,
+     政権,改革`)、非法人組織・施設・医療系 (`クリニック,医院,歯科,薬局,サロン,
+     ラボ,研究所,学会,財団,協会`)、構造的ストップワード補完
+     (`自身,本人,周辺,以外,対象,担当,関係`) の計5カテゴリを収録し、
+     「人名 + 一般名詞/組織名」を広く誤認防止対象とする)
+     前方一致にも一致しない場合のみ「氏名フルネーム」として昇格する
+4. `ambiguous=0` の姓 (多くの2字以上の姓) は単独でも中程度の確信度で発火するが
+   既定閾値未満に留め、敬称/フルネーム昇格でのみ redact 対象になる (§7.10.7)。
+
+**発見済みの限界その2 (付録 A.10)**: このネガティブリストは
+当初「会社名接尾辞のみ・住所側」に置く想定だったが、自己適用トレースで
+「住所は確信度階層だけで十分 FP を抑えられる (裸の地名は 0.50〜0.55 で
+足切りされる)」一方、「氏名側の "名" ヒューリスティックは会社名
+(`山田電機`) だけでなく学術用語 (`佐藤理論`) や健康法 (`佐藤体操`) 等の
+一般名詞複合語全般を人名と区別できない」ことが分かったため、対象を
+会社名以外の4カテゴリ (学術・健康/技法・社会思想・非法人組織) と
+構造的ストップワード補完へ拡張したうえで、**氏名側にのみ** 実装する
+(語彙全量は `docs/resource/ja-name-negative-list.md` を正とする)。
+
+---
+
+### 7.10.7 確信度較正表
+
+| rule_id | カテゴリ | 条件 | confidence | 既定閾値(0.75)超え |
+|---|---|---|---|---|
+| `ja_addr_pref` | `PII_ADDRESS_JA` | 都道府県名のみ、丁目/番地/号なし | 0.50 | いいえ |
+| `ja_addr_city` | `PII_ADDRESS_JA` | 市区町村(区)名のみ、丁目/番地/号なし | 0.55 | いいえ |
+| `ja_addr_full` | `PII_ADDRESS_JA` | 都道府県+市区町村 + 丁目/番地/号あり | 0.90 | はい |
+| `ja_addr_full_pref_only` | `PII_ADDRESS_JA` | 市区町村なしで都道府県+丁目/番地/号 (稀) | 0.85 | はい |
+| `ja_name_surname` | `PII_NAME_JA` | 非曖昧姓のみ、昇格なし | 0.65 | いいえ |
+| `ja_name_full` | `PII_NAME_JA` | 姓+名 (ストップワード/拡張ネガティブリストガード通過) | 0.90 | はい |
+| `ja_name_honorific` | `PII_NAME_JA` | 姓(曖昧含む)+敬称 | 0.92 | はい |
+| `ja_name_full_honorific` | `PII_NAME_JA` | 姓+名+敬称 | 0.97 | はい |
+| (曖昧姓、昇格なし) | — | 破棄 (Detection を生成しない) | — | — |
+
+比較用に既存 §7.4 の近傍ルールを再掲: `jp_mynumber`=0.90, `phone_e164`=0.80。
+`ja_addr_full`=0.90 は `jp_mynumber` と同値のため、後述 §7.10.9 で明示的な
+回帰テストを要件化する。
+
+---
+
+### 7.10.8 config → `DetectionEngine` 配線
+
+```rust
+pub struct JaPiiConfig {
+    pub enabled: bool,
+    pub address: JaAddressConfig,
+    pub name: JaNameConfig,
+}
+pub struct JaAddressConfig { pub enabled: bool, pub automaton: Arc<AddressAutomaton> }
+pub struct JaNameConfig    { pub enabled: bool, pub dict: Arc<NameDict> }
+
+impl DetectionEngine {
+    pub fn scan(&self, text: &str) -> Vec<Detection> {
+        let mut spans = l1_scan(text, &self.extra_enabled_rule_ids);
+        if self.l2_enabled {
+            spans.extend(l2_entropy_scan(text, &self.entropy));
+        }
+        if self.ja_pii.enabled {
+            if self.ja_pii.address.enabled {
+                spans.extend(ja_dict::address::scan(text, &self.ja_pii.address.automaton));
+            }
+            if self.ja_pii.name.enabled {
+                spans.extend(ja_dict::name::scan(text, &self.ja_pii.name.dict));
+            }
+        }
+        let spans = drop_allowlisted(spans, text, &self.allowlist);
+        let mut spans = resolve_overlaps(spans);
+        spans.retain(|d| d.confidence >= self.min_confidence);
+        spans
+    }
+}
+```
+
+既存の `l2_enabled: bool` と全く同じ形の追加であり、`resolve_overlaps` /
+`drop_allowlisted` / 閾値カットは**無改造で再利用**する。
+
+---
+
+### 7.10.9 overlap resolution との関係・既知の衝突ケース
+
+- **既存の衝突事例 (CLAUDE.md ハマりポイント)**: `jp_mynumber` (`\b\d{12}\b`,
+  conf 0.90) と `phone_e164` (`+[1-9]\d{7,14}`, conf 0.80) は桁数が近く
+  同一コーパスで衝突した実績がある。
+- 本設計の住所拡張正規表現は「丁目/番地/号」という**漢字を含む区切り文字**を
+  必須にしているため、`jp_mynumber` の純数字12桁とは字面上一致しない
+  (`4丁目2番8号` は `\b\d{12}\b` にマッチしない: 数字の連続が最大4桁までしか
+  出ない設計)。したがって新規の衝突リスクは低いと判断する。
+- ただし念のため、`ja_addr_full` (0.90) は `jp_mynumber` (0.90) と同値なので、
+  「住所と紛らわしい12桁の羅列が丁目/番地表記に隣接する」合成テストケースを
+  §7.10.12 のコーパスに**明示的に**含めることを要件化する (「桁数を近づけない」
+  という既存の教訓の逆パターン: 今回は桁数がそもそも遠いことをテストで固定する)。
+- `resolve_overlaps` は変更不要 (confidence 降順 → 長さ降順 → 開始位置昇順の
+  既存ロジックがそのまま新カテゴリにも適用される)。
+
+---
+
+### 7.10.10 プレースホルダー / 正規化統合 (§7.7-7.8 との接続)
+
+- プレースホルダー形式は共通: `⟦GDK:PII_ADDRESS_JA:<ID>⟧` / `⟦GDK:PII_NAME_JA:<ID>⟧`。
+  カテゴリ名が24文字以内の `[A-Z][A-Z0-9_]*` 制約 (§7.7) を両方満たす。
+- `normalize(value)` (§7.8) への追加:
+  - `PII_ADDRESS_JA` → NFKC正規化のみ (全角数字→半角等)。丁目/番地の表記ゆれ
+    (`4丁目` vs `４丁目` vs `4-`) は **v1 では正規化しない**
+    (同じ人が同じ住所を別表記で書いた場合に別プレースホルダーになるのは
+    許容する保守的既定。将来の拡張候補として付録 A.1 に記載)。
+  - `PII_NAME_JA` → NFKC正規化 + 姓名間の空白 (半角/全角/複数) を単一の
+    半角スペース1個に正規化してから ID を計算 (`山田　太郎` と `山田 太郎` が
+    同一プレースホルダーになるようにする)。
+- どちらも `SECRET` と同じく大文字小文字変換は行わない (氏名・地名は
+  大文字小文字の概念がないため無関係)。
+
+---
+
+### 7.10.11 監査ログ統合
+
+`gedoku-audit::record::RedactionRecord.counts: BTreeMap<&'static str, u64>` は
+カテゴリ名を汎用的に受け取る設計 (P4-T1 の DoD: 原文を持てる型が存在しない) の
+ため、**既存コードの変更は一切不要**で新カテゴリ2件がそのまま集計に乗る。
+
+追加が必要なのは起動時ログの1行のみ (新規):
+
+```rust
+tracing::info!(
+    target: "gedoku_audit",
+    event = "ja_pii_dict_loaded",
+    address_entries = address_automaton.pattern_count(),
+    surname_entries = name_dict.len(),
+    surname_dict_sha256 = %surname_dict_sha256.unwrap_or_default(),
+    "gedoku-audit: ja_pii dictionaries loaded"
+);
+```
+
+fail_closed で起動を中断する経路 (`JaDictError` の全バリアント) にも、
+**同じ `target: "gedoku_audit"` 系統・同じ構造化フィールド形式**でログを
+1行追加する (受理と拒否を非対称なログ形式にしない):
+
+```rust
+tracing::error!(
+    target: "gedoku_audit",
+    event = "ja_pii_dict_load_rejected",
+    path = %err_path.display(),
+    reason = %ja_dict_error, // JaDictError の Display 実装
+    "gedoku-audit: ja_pii dictionary load rejected (fail_closed)"
+);
+```
+
+これにより第三者は「その時点でどのバージョンの辞書が有効だったか
+(受理の場合)」を起動ログの sha256 と `assets/ja/README.md` のスナップショット
+日付から、また「なぜ起動しなかったか (拒否の場合)」を `ja_pii_dict_load_rejected`
+の `path`/`reason` から、どちらも成果物 (辞書ファイルそのもの) なしで
+再構成できる。受理・拒否のどちらのイベントも同じ `target` 配下に出力される
+契約のため、監査ログの集約基盤 (P4) を変更せずに両方を拾える。
+
+---
+
+### 7.10.12 テスト / コーパス戦略
+
+P2-T8 (`src/gedoku-detect/tests/p2_t8_corpus_f1.rs`) と同じ「validator 逆算で
+正例/負例を自動生成し F1 を CI ゲートにする」方式を踏襲し、以下を追加する:
+
+- **正例**: 内蔵辞書からランダムに市区町村を選び丁目/番地/号を合成 (住所)、
+  姓辞書 (テスト用ダミー姓リスト、非公開データに依存しない) から姓+名+敬称を
+  合成 (氏名)。
+- **負例**: 拡張ネガティブリスト5カテゴリそれぞれとの組み合わせ
+  (会社名接尾辞 `山田電機は…`、学術 `佐藤理論は…`、健康/技法 `佐藤体操は…`、
+  社会思想 `田中主義は…`、非法人組織 `山本クリニックは…`)、議定書/大学等の
+  固有名詞との組み合わせ (`京都府警本部…` のような裸地名)、ストップワードとの
+  組み合わせ (`田中は…`)。
+- **ホールドアウト**: 辞書に**含めない**姓/市区町村を別枠で10%用意し、
+  ホールドアウト側の F1 が学習コーパス側と乖離しないことを確認する
+  (辞書丸暗記による見かけ上の高スコアを防ぐ、付録 A.4 参照)。
+- 単体テスト (関数呼び出し列と期待値、`rules.rs` の既存テストスタイルに合わせる):
+
+```rust
+#[test]
+fn ja_addr_full_detected_with_banchi() {
+    let text = "東京都港区芝公園4丁目2番8号にお越しください";
+    let d = ja_dict::address::scan(text, &test_automaton());
+    let hit = d.iter().find(|x| x.rule_id == "ja_addr_full").unwrap();
+    assert_eq!(hit.text(text), "東京都港区芝公園4丁目2番8号");
+    assert!(hit.confidence >= 0.90);
+}
+
+#[test]
+fn bare_city_mention_not_redacted_by_default_engine() {
+    let mut engine = DetectionEngine::default();
+    engine.ja_pii.enabled = true;
+    engine.ja_pii.address.enabled = true;
+    let hits = engine.scan("去年は大阪府で花火大会がありました");
+    assert!(!hits.iter().any(|d| d.category == category::PII_ADDRESS_JA));
+}
+
+#[test]
+fn ambiguous_surname_alone_is_not_flagged() {
+    let text = "森の中を歩いた";
+    let d = ja_dict::name::scan(text, &test_dict_with_ambiguous("森"));
+    assert!(d.is_empty());
+}
+
+#[test]
+fn ambiguous_surname_with_honorific_is_flagged() {
+    let text = "森様にご確認ください";
+    let d = ja_dict::name::scan(text, &test_dict_with_ambiguous("森"));
+    let hit = d.iter().find(|x| x.rule_id == "ja_name_honorific").unwrap();
+    assert_eq!(hit.text(text), "森様");
+}
+
+#[test]
+fn negative_list_guards_against_false_full_name() {
+    let cases = [
+        ("山田電機の株価が上昇した", "山田"), // 会社名接尾辞
+        ("佐藤理論は物理学の基礎だ", "佐藤"), // 学術・科学技術
+        ("佐藤体操を毎朝している", "佐藤"),   // 健康・技法
+        ("田中主義が広まった", "田中"),       // 社会・思想
+        ("山本クリニックを受診した", "山本"), // 非法人組織・医療
+    ];
+    for (text, surname) in cases {
+        let d = ja_dict::name::scan(text, &test_dict_non_ambiguous(surname));
+        assert!(!d.iter().any(|x| x.rule_id == "ja_name_full"), "false positive: {text}");
+    }
+}
+
+#[test]
+fn name_scan_is_noop_when_surname_dict_path_unset() {
+    let d = ja_dict::name::scan("山田太郎様", &NameDict::empty());
+    assert!(d.is_empty());
+}
+
+#[test]
+fn invalid_surname_tsv_fails_closed_at_startup() {
+    let err = ja_dict::load_surname_dict(Some(Path::new("broken.tsv"))).unwrap_err();
+    assert!(matches!(err, JaDictError::MalformedRow { .. }));
+}
+
+#[test]
+fn addr_full_does_not_collide_with_jp_mynumber_regex() {
+    // §7.10.9: 丁目/番地表記は漢字区切りのため 12 桁純数字の regex とは字面上一致しない
+    let text = "港区123456789012丁目1番1号"; // 意図的に12桁の羅列を隣接させる回帰テスト
+    let d = DetectionEngine::default_with_ja_pii().scan(text);
+    // カテゴリが混線せず、mynumber 側は12桁ちょうどの純粋な数字列にしか反応しない
+    assert!(d.iter().filter(|x| x.rule_id == "jp_mynumber").count() <= 1);
+}
+```
+
+- CI ゲート: 既存 `p2_t8_corpus_f1.rs` と同様に `F1 >= 0.90` (氏名は辞書非同梱の
+  ためテスト専用ダミー辞書を使う。住所は同梱辞書 `pref_city.tsv` をそのまま使う)。
+
+---
+
+### 7.10.13 既定値一覧
+
+| 項目 | 既定値 | 理由 |
+|---|---|---|
+| `ja_pii.enabled` | `false` | §7.1 の NER と同じ「PII 検出は FP リスクがあるためマスタースイッチは opt-in」方針を踏襲 |
+| `ja_pii.address.enabled` | `false` | 同上。辞書は同梱済みだが、まずマスタースイッチで無効化 |
+| `ja_pii.address.dict_path` | `""` (空 = 内蔵辞書のみ) | 内蔵 `pref_city.tsv` で足りるケースが大半 |
+| `ja_pii.address.extra_town_dict_path` | `""` (空 = 追加なし) | 町丁目辞書は同梱しない (§7.10.2) ため既定は無効 |
+| `ja_pii.name.enabled` | `false` | 同上 |
+| `ja_pii.name.surname_dict_path` | `""` (空 = 姓辞書なし、常に no-op) | ライセンス上、姓データを同梱しない意思決定 (§7.10.2) の直接の帰結 |
+| `ja_pii.name.honorifics` | `["様","さん","氏","殿","君","先生"]` | 日本語ビジネス文書で最頻出の敬称5種+「先生」。運用者が業種特有の敬称 (例: 「殿下」「猊下」) を追加できるよう配列は上書き可 |
+| 住所 confidence 閾値群 | §7.10.7 の表 (0.50〜0.97) | 既存 `min_confidence=0.75` (§7.5 と同じ既定) を跨ぐように意図的に設計: 裸の地名/姓は下、文脈昇格したものは上 |
+| 丁目/番地/号 拡張の探索窓 | 60文字 | 既存 L2 エントロピーの `context_window=40` (§7.5) より長めに取る。理由: 住所は「都道府県+市区町村」から「丁目」までの間に建物名等が挟まる実例があるため、電話番号文脈探索より広めの窓が必要と判断 |
+| 隣接アンカーのマージ許容空白 | 0〜1文字 | 「東京都 港区」のような稀な表記ゆれのみ許容し、無関係な語を跨いで誤結合しないよう最小限に抑える |
+| ホールドアウト比率 (§7.10.12) | 10% | 既存 P2-T8 コーパス (306件) の規模感に対し、少なくとも二桁件数のホールドアウトを確保できる最小の比率として設定 |
+| CI ゲート F1 閾値 | 0.90 | 既存 P2-T8 の `F1=1.0` 実績より緩めるが、辞書ベース手法は正規表現ほど決定的ではないため NER 導入前の中間解として現実的な目標値に設定 |
+
+上記のうち「実装時に決める」「TBD」に該当する項目は無い
+(このカッコ書きの2語自体が本文中に出現するのは、いま引用した禁止語句の説明
+としてのみである)。
+
+---
+
 ## 8. system ブロック構造保存とプロンプトキャッシュ
 
 ### 8.1 規範

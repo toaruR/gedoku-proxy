@@ -14,3 +14,5 @@ pub const NET: &str = "NET";
 pub const PII_PATH: &str = "PII_PATH";
 /// L2 のみが使うヒューリスティックカテゴリ (§7.5)。既定閾値では単独発火しない。
 pub const SECRET_HEURISTIC: &str = "SECRET_HEURISTIC";
+pub const PII_ADDRESS_JA: &str = "PII_ADDRESS_JA";
+pub const PII_NAME_JA: &str = "PII_NAME_JA";

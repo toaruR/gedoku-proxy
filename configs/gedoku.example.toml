@@ -33,3 +33,21 @@ debug_dump_replacements = false
 [[extra_upstream_headers]]
 name = "x-org-route"
 value = "team-a"
+
+# 日本語PII (住所/氏名) Aho-Corasick辞書検出 (設計 §7.10)。
+# マスタースイッチ含め既定 off (PII検出はFPリスクがあるためopt-in)。
+[ja_pii]
+enabled = false
+
+[ja_pii.address]
+enabled = false
+# 空文字列 = 内蔵 assets/ja/pref_city.tsv のみを使う。
+dict_path = ""
+# 町丁目辞書は同梱しないため既定は追加なし。
+extra_town_dict_path = ""
+
+[ja_pii.name]
+enabled = false
+# ライセンス上、姓データを同梱しないため既定は姓辞書なし (氏名検出は常に no-op)。
+surname_dict_path = ""
+honorifics = ["様", "さん", "氏", "殿", "君", "先生"]
