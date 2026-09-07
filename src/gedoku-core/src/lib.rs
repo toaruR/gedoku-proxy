@@ -128,7 +128,9 @@ pub struct JaPiiConfig {
 #[derive(Debug, Clone, PartialEq)]
 pub struct JaAddressConfig {
     pub enabled: bool,
-    /// 空文字列 = 内蔵 `pref_city.tsv` のみを使う。
+    /// 予約フィールド (v1未使用)。内蔵 `pref_city.tsv` を置き換える手段は
+    /// `gedoku_detect::ja_dict::load_address_dict` (追加辞書1本のみ受け付ける)
+    /// 側に無いため、値を設定しても効果はない。追加は `extra_town_dict_path` を使う。
     pub dict_path: String,
     /// 空文字列 = 町丁目辞書の追加なし (同梱しない、§7.10.2)。
     pub extra_town_dict_path: String,

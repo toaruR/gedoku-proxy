@@ -2,6 +2,8 @@
 
 use gedoku_audit::{LogGuard, RedactionRecord, RestorationRecord};
 use gedoku_core::{Mode, RealmId, RealmStrategy};
+use gedoku_detect::engine::{JaAddressConfig, JaNameConfig, JaPiiConfig};
+use gedoku_detect::ja_dict::{load_address_dict, load_surname_dict};
 use gedoku_detect::{Detection, DetectionEngine};
 use gedoku_jsonwalk::JsonWalkError;
 use gedoku_mapstore::{
@@ -13,7 +15,9 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::Write;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
 
 /// `MappingStore::resolve` は `Placeholder::id` のみをキーに引く (`category` は
@@ -50,13 +54,17 @@ impl Redactor {
     /// `main.rs` は同じ `LogGuard` を `tracing_subscriber` の writer にも渡すため、
     /// このコンストラクタで受け取ったインスタンスをそのまま保持する。
     pub fn with_log_guard(log_guard: LogGuard) -> Self {
-        Self::with_log_guard_and_debug_dump(log_guard, false)
+        Self::with_log_guard_and_debug_dump(log_guard, false, &gedoku_core::JaPiiConfig::default())
     }
 
     /// `debug_dump_replacements` 設定 (既定 off) を反映したコンストラクタ。
+    /// `ja_pii` (`configs/gedoku.toml` の `[ja_pii]`) は `DetectionEngine` へ反映する
+    /// (P5-T1 で発覚した配線漏れの修正)。辞書ロード失敗は `Config::from_toml_file` と
+    /// 同じ方針で起動時 `panic!` させる。
     pub fn with_log_guard_and_debug_dump(
         log_guard: LogGuard,
         debug_dump_replacements: bool,
+        ja_pii: &gedoku_core::JaPiiConfig,
     ) -> Self {
         if debug_dump_replacements {
             tracing::warn!(
@@ -64,8 +72,12 @@ impl Redactor {
                 "gedoku-proxy: debug_dump_replacements is ON — placeholder/category/context (not original secrets) will be written to disk"
             );
         }
+        let engine = DetectionEngine {
+            ja_pii: build_ja_pii_config(ja_pii),
+            ..DetectionEngine::default()
+        };
         Redactor {
-            engine: DetectionEngine::default(),
+            engine,
             store: MemoryMappingStore::new(MappingStoreConfig::default()),
             log_guard,
             debug_dump: debug_dump_replacements.then(open_debug_dump_file),
@@ -223,6 +235,38 @@ impl Redactor {
         out.push_str(&text[cursor..]);
         out
     }
+}
+
+/// `gedoku_core::JaPiiConfig` (TOMLデシリアライズ用、パス文字列を保持) を
+/// `gedoku_detect::engine::JaPiiConfig` (起動時に構築済みの辞書を保持) へ変換する。
+/// 辞書ロード失敗は `Config::from_toml_file` の不正設定ファイル方針 (起動時 `panic!`) に
+/// 揃える。`extra_town_dict_path` のみが `load_address_dict` の追加辞書として使われる
+/// (`dict_path` は現状 (v1) 内蔵辞書を置き換える手段が実装側に存在しない予約フィールド、
+/// `configs/gedoku.toml` のコメント参照)。
+fn build_ja_pii_config(config: &gedoku_core::JaPiiConfig) -> JaPiiConfig {
+    let extra_town_path = non_empty_path(&config.address.extra_town_dict_path);
+    let automaton = load_address_dict(extra_town_path.as_deref())
+        .unwrap_or_else(|e| panic!("gedoku-proxy: failed to load ja_pii address dictionary: {e}"));
+
+    let surname_path = non_empty_path(&config.name.surname_dict_path);
+    let name_dict = load_surname_dict(surname_path.as_deref())
+        .unwrap_or_else(|e| panic!("gedoku-proxy: failed to load ja_pii surname dictionary: {e}"));
+
+    JaPiiConfig {
+        enabled: config.enabled,
+        address: JaAddressConfig {
+            enabled: config.address.enabled,
+            automaton: Arc::new(automaton),
+        },
+        name: JaNameConfig {
+            enabled: config.name.enabled,
+            dict: Arc::new(name_dict),
+        },
+    }
+}
+
+fn non_empty_path(s: &str) -> Option<std::path::PathBuf> {
+    (!s.is_empty()).then(|| Path::new(s).to_path_buf())
 }
 
 fn open_debug_dump_file() -> Mutex<File> {
@@ -478,7 +522,11 @@ mod tests {
     #[test]
     fn debug_dump_writes_category_and_context_but_never_the_raw_secret() {
         let _ = std::fs::remove_file(DEBUG_DUMP_PATH);
-        let redactor = Redactor::with_log_guard_and_debug_dump(LogGuard::stdout(), true);
+        let redactor = Redactor::with_log_guard_and_debug_dump(
+            LogGuard::stdout(),
+            true,
+            &gedoku_core::JaPiiConfig::default(),
+        );
         let secret = "sk-ant-abcdefghijklmnopqrstuvwx";
         let body = json!({
             "messages": [{"role": "user", "content": format!("please rotate my key {secret} today")}]
@@ -499,5 +547,87 @@ mod tests {
         assert!(dumped.contains("\u{27E6}GDK:SECRET:"));
         assert!(dumped.contains("please rotate my key"));
         assert!(dumped.contains("today"));
+    }
+
+    fn ja_pii_config_on() -> gedoku_core::JaPiiConfig {
+        gedoku_core::JaPiiConfig {
+            enabled: true,
+            address: gedoku_core::JaAddressConfig {
+                enabled: true,
+                dict_path: String::new(),
+                extra_town_dict_path: String::new(),
+            },
+            name: gedoku_core::JaNameConfig {
+                enabled: false,
+                surname_dict_path: String::new(),
+                honorifics: Vec::new(),
+            },
+        }
+    }
+
+    /// `configs/gedoku.toml` の `[ja_pii]` / `[ja_pii.address]` `enabled=true` が
+    /// `Redactor` まで届き、実際に住所検出/置換が起きることを確認する
+    /// (P5-T1 配線漏れバグの回帰テスト)。
+    #[test]
+    fn ja_pii_config_from_core_reaches_redactor_and_detects_address() {
+        let redactor =
+            Redactor::with_log_guard_and_debug_dump(LogGuard::stdout(), false, &ja_pii_config_on());
+        let body = json!({
+            "messages": [{"role": "user", "content": "住所はさいたま市北区本郷町555-5です"}]
+        });
+        let out_bytes = redactor
+            .redact_body(
+                &serde_json::to_vec(&body).unwrap(),
+                &realm(),
+                "/v1/messages",
+            )
+            .unwrap();
+        let out: serde_json::Value = serde_json::from_slice(&out_bytes).unwrap();
+        let text = out["messages"][0]["content"].as_str().unwrap();
+        assert!(!text.contains("さいたま市北区本郷町"));
+        assert!(text.contains("\u{27E6}GDK:"));
+    }
+
+    /// `[ja_pii] enabled=false` (既定) では `Redactor` 経由でも日本語住所を検出しない
+    /// end-to-end 版 (`gedoku-detect` 側の `ja_pii_all_off_default_detects_nothing_and_warns_nothing`
+    /// に対応)。
+    #[test]
+    fn ja_pii_disabled_default_config_detects_no_japanese_address_via_redactor() {
+        let redactor = Redactor::with_log_guard_and_debug_dump(
+            LogGuard::stdout(),
+            false,
+            &gedoku_core::JaPiiConfig::default(),
+        );
+        let body = json!({
+            "messages": [{"role": "user", "content": "住所は東京都港区芝公園4丁目2番8号です"}]
+        });
+        let input = serde_json::to_vec(&body).unwrap();
+        let out_bytes = redactor
+            .redact_body(&input, &realm(), "/v1/messages")
+            .unwrap();
+        assert_eq!(
+            out_bytes, input,
+            "ja_pii disabled のため本文は完全に不変のはず"
+        );
+    }
+
+    #[test]
+    fn build_ja_pii_config_disabled_flag_survives_conversion() {
+        let core_cfg = gedoku_core::JaPiiConfig::default();
+        let engine_cfg = build_ja_pii_config(&core_cfg);
+        assert!(!engine_cfg.enabled);
+        assert!(!engine_cfg.address.enabled);
+        assert!(!engine_cfg.name.enabled);
+        assert!(engine_cfg.name.dict.is_empty());
+    }
+
+    #[test]
+    fn build_ja_pii_config_enabled_flag_survives_conversion() {
+        let engine_cfg = build_ja_pii_config(&ja_pii_config_on());
+        assert!(engine_cfg.enabled);
+        assert!(engine_cfg.address.enabled);
+        assert!(!engine_cfg.name.enabled);
+        // 内蔵 pref_city.tsv がロードされていること (0件なら EmptyDictionary で panic するはず)。
+        assert!(engine_cfg.address.automaton.pattern_count() > 0);
     }
 }

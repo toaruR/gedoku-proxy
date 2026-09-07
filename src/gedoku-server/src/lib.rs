@@ -62,6 +62,7 @@ pub fn build_router_with_guard(config: Arc<Config>, log_guard: LogGuard) -> Rout
     let redactor = Arc::new(Redactor::with_log_guard_and_debug_dump(
         log_guard,
         config.debug_dump_replacements,
+        &config.ja_pii,
     ));
     let state = AppState {
         config,
@@ -80,6 +81,7 @@ pub fn build_router_with_client(config: Arc<Config>, client: reqwest::Client) ->
     let redactor = Arc::new(Redactor::with_log_guard_and_debug_dump(
         LogGuard::stdout(),
         config.debug_dump_replacements,
+        &config.ja_pii,
     ));
     let state = AppState {
         config,
