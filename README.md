@@ -4,19 +4,24 @@
 
 ### Detoxify communications sent by your agent
 
-A transparent proxy that auto-redacts API keys and emails into type-aware placeholders before they reach the upstream, then restores them in the response. Just point `ANTHROPIC_BASE_URL` at it. Rust / axum.
+A transparent proxy that auto-redacts API keys, emails, and Japanese names/addresses (opt-in) into type-aware placeholders before they reach the upstream, then restores them in the response. Just point `ANTHROPIC_BASE_URL` at it. Rust / axum.
 
 > See [docs/gedoku-proxy-design.md](docs/gedoku-proxy-design.md) for the detailed design and [docs/specification.md](docs/specification.md) for the spec.
 
 ## Status
 
-**P0–P5 complete**: transparent proxy skeleton, structure-preserving JSON walking, PII/secret detection & substitution, streaming (SSE) restoration, audit logging, and config/deployment are all implemented and covered by CI. Known remaining gaps (Bedrock/Vertex AWS event-stream framing, a 290s keepalive soak test, dylint custom lints, and real K8s cluster validation) are tracked in [docs/known-gaps.md](docs/known-gaps.md).
+**P0–P5 complete**: transparent proxy skeleton, structure-preserving JSON walking, PII/secret detection & substitution, streaming (SSE) restoration, audit logging, and config/deployment are all implemented and covered by CI. Also supports an Aho-Corasick-based Japanese PII (name & address) detection engine. Known remaining gaps (Bedrock/Vertex AWS event-stream framing, a 290s keepalive soak test, dylint custom lints, and real K8s cluster validation) are tracked in [docs/known-gaps.md](docs/known-gaps.md).
 
 ## Layout
 
 ```
 src/
   gedoku-core/           config (Config), error types
+  gedoku-detect/         secret / PII / Japanese name & address detection engine
+  gedoku-mapstore/       encrypted mapping store & placeholder generation
+  gedoku-stream/         SSE streaming restoration scanner
+  gedoku-jsonwalk/       structure-preserving JSON walker
+  gedoku-audit/          HMAC audit logging
   gedoku-server/         axum handlers / bin crate gedoku-proxy
   gedoku-mock-upstream/  fake Anthropic server for testing
 ```
@@ -49,6 +54,37 @@ cargo run -p gedoku-server --bin gedoku-proxy -- --config configs/gedoku.toml
 ```
 
 See [configs/gedoku.example.toml](configs/gedoku.example.toml) for all available keys. Unknown keys or type mismatches make the process fail to start.
+
+## Japanese PII Redaction (Names & Addresses)
+
+High-speed detection and redaction for Japanese names and addresses combining Aho-Corasick dictionary matching with heuristic validation. Redacted values are replaced with placeholders (`⟦GDK:PII_NAME_JA:...⟧`, `⟦GDK:PII_ADDRESS_JA:...⟧`) and restored transparently in the response. To prevent false positives, this feature is **disabled by default (opt-in)** and can be enabled via `configs/gedoku.toml`.
+
+### Address Redaction (`ja_pii.address`)
+- **Built-in Dictionary**: Embeds all prefectures and municipalities across Japan (~1,900 entities) in the binary.
+- **Full Address Matching**: Matches prefecture/municipality prefixes followed by sub-areas, block numbers, building names, and room numbers using regex/character-class transitions.
+- **False-Positive Mitigation**: Bare mentions of cities or prefectures without street numbers (e.g., "東京都", "大阪市") are intentionally not redacted to avoid over-sanitizing normal text.
+- **Extensibility**: Additional town/sub-district dictionaries can be supplied via `extra_town_dict_path`.
+
+### Name Redaction (`ja_pii.name`)
+- **Custom Surname Dictionary**: Surnames are not bundled due to licensing and data size considerations. Provide your own TSV-formatted surname dictionary via `surname_dict_path`.
+- **Context & Honorifics**: Recognizes honorific suffixes (`honorifics`: `様`, `さん`, `氏`, `殿`, `君`, `先生`, etc.) and full-name (surname + given name) patterns.
+- **Negative List Guard**: Suppresses false positives on common nouns that coincide with rare or ambiguous surnames.
+
+### Example Configuration (`configs/gedoku.toml`)
+
+```toml
+[ja_pii]
+enabled = true
+
+[ja_pii.address]
+enabled = true
+# extra_town_dict_path = "path/to/towns.tsv"  # Optional extra town dictionary
+
+[ja_pii.name]
+enabled = true
+surname_dict_path = "path/to/surnames.tsv"    # Required TSV surname dictionary
+honorifics = ["様", "さん", "氏", "殿", "君", "先生"]  # Target honorific suffixes
+```
 
 ## Environment Variables
 
