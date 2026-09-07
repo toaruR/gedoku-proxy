@@ -310,6 +310,13 @@ mod tests {
     }
 
     #[test]
+    fn bearer_ctx_does_not_flag_rust_struct_field_type_annotation() {
+        let text = "struct FileConfig {\n    upstream_auth_token: Option<String>,\n    upstream_api_key: Option<String>,\n}\n";
+        let d = scan(text);
+        assert!(!d.iter().any(|x| x.rule_id == "bearer_ctx"));
+    }
+
+    #[test]
     fn optional_rules_require_explicit_opt_in() {
         let text = "internal ip 10.0.0.5 seen in logs";
         assert!(l1_scan(text, &HashSet::new()).is_empty());

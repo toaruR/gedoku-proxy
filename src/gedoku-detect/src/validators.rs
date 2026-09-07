@@ -123,9 +123,24 @@ pub fn jwt_header_valid(full_match: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// bearer_ctx: 前後の文脈語で拾った値のエントロピーが十分高いか。
+static RUST_TYPE_ANNOTATION_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"^(?:Option|Vec|Box|Result|HashMap|HashSet|BTreeMap|BTreeSet|Arc|Rc|RefCell|Cell)<[^,]*>$|^&?(?:String|str|bool|char|u8|u16|u32|u64|u128|usize|i8|i16|i32|i64|i128|isize|f32|f64)$",
+    )
+    .expect("valid regex")
+});
+
+/// `struct Foo { field: Option<String>, }` のようなRust型注釈らしい値か
+/// (`bearer_ctx` がフィールド名中の "token"/"key" にマッチし、直後の型を
+/// 値として誤検出するのを防ぐ)。
+pub fn looks_like_rust_type_annotation(s: &str) -> bool {
+    RUST_TYPE_ANNOTATION_RE.is_match(s)
+}
+
+/// bearer_ctx: 前後の文脈語で拾った値のエントロピーが十分高く、かつ
+/// Rust の型注釈 (`Option<String>` 等) ではないか。
 pub fn high_entropy_value(s: &str) -> bool {
-    shannon_entropy(s) >= 3.0
+    shannon_entropy(s) >= 3.0 && !looks_like_rust_type_annotation(s)
 }
 
 /// aws_secret: 40文字のキャプチャ値がランダムらしい (エントロピー) か。
@@ -382,6 +397,14 @@ mod tests {
         ));
         assert!(looks_like_known_noise(&"a".repeat(40)));
         assert!(!looks_like_known_noise("ZZthisIsNotHexOrUuidZZ12345"));
+    }
+
+    #[test]
+    fn high_entropy_value_rejects_rust_type_annotations() {
+        assert!(!high_entropy_value("Option<String>"));
+        assert!(!high_entropy_value("Vec<String>"));
+        assert!(!high_entropy_value("HashMap<String>"));
+        assert!(high_entropy_value("aZ3kQ9mP2wX7bN4h"));
     }
 
     #[test]
