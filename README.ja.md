@@ -113,4 +113,4 @@ cargo clippy --workspace --all-targets -j 1
 
 ## ライセンス
 
-MIT
+[MIT](LICENSE)
